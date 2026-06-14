@@ -1,0 +1,51 @@
+# ============================================================
+# LexAI — Backend Requirements
+# Curated top-level packages, each mapped to its role in the
+# Backend Documentation. Lock exact versions from your working
+# venv with:  pip freeze > requirements.lock.txt
+# ============================================================
+
+# ---- Web framework / server (Backend §) ----
+fastapi
+uvicorn[standard]
+python-multipart          # required for FastAPI file uploads (/upload)
+
+# ---- Orchestration (LlamaIndex) ----
+llama-index-core
+llama-index-embeddings-huggingface   # Layer 2: bge-small-en-v1.5 embeddings
+llama-index-vector-stores-chroma     # Layer 3: ChromaDB vector store
+llama-index-retrievers-bm25          # Layer 3: BM25 keyword retrieval
+llama-index-llms-nvidia              # Generation: NVIDIA NIM (LLaMA 3.1-8b)
+# llama-index-llms-groq              # Uncomment if Groq is the chosen provider
+
+# ---- Vector DB (Layer 3 / Storage §) ----
+chromadb
+
+# ---- Embeddings + Reranker models (Layers 2 & 5) ----
+sentence-transformers     # embeddings + cross-encoder reranker (bge-reranker-base)
+torch                     # CPU build is fine; keep within the ~1.6 GB RAM budget
+
+# ---- Layer 1: Smart Ingestion ----
+PyMuPDF                   # imported as `fitz` — layout-aware, two-column extraction
+
+# ---- Layer 3: BM25 keyword index ----
+rank-bm25
+# NOTE: PyStemmer must be installed SEPARATELY on Windows:
+#   pip install PyStemmer --no-deps
+
+# ---- Auth + Data ----
+supabase                  # Supabase Python client (profile, library metadata)
+
+# ---- Config / secrets ----
+python-dotenv
+
+# ---- Evaluation (Layer 7 proof / Success Metrics) ----
+ragas                     # measured faithfulness score (run offline, not at request time)
+datasets                  # ragas dependency for eval sets
+
+# ============================================================
+# Reminder: this lists INTENT. Your working venv is the truth.
+# Run `pip freeze > requirements.lock.txt` and commit that too,
+# so the deployed Render build matches what runs on your machine.
+# ============================================================
+

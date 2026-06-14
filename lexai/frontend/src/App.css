@@ -1,0 +1,175 @@
+/* LexAI — cream/charcoal design system (Phase 1) */
+
+:root {
+  --cream: #efeae0;
+  --charcoal: #1a1a1a;
+  --muted: #6b6459;
+  --line: #d8d1c4;
+  --card: #f6f2ea;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--cream);
+  color: var(--charcoal);
+  font-family: "Space Grotesk", system-ui, -apple-system, sans-serif;
+}
+
+.app {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 48px 24px 80px;
+}
+
+.header {
+  margin-bottom: 32px;
+}
+
+.wordmark {
+  font-size: 40px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  margin: 0;
+}
+
+.tagline {
+  color: var(--muted);
+  margin: 6px 0 0;
+  font-size: 15px;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+
+.upload-btn {
+  display: inline-block;
+  background: var(--charcoal);
+  color: var(--cream);
+  padding: 12px 20px;
+  border-radius: 8px;
+  font-size: 14px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.papers {
+  margin: 14px 0 0;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.status {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.question {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  font-size: 15px;
+  font-family: inherit;
+  resize: vertical;
+  background: #fff;
+  color: var(--charcoal);
+}
+
+.ask-btn {
+  margin-top: 12px;
+  background: var(--charcoal);
+  color: var(--cream);
+  border: none;
+  padding: 12px 28px;
+  border-radius: 8px;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.ask-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.answer-card {
+  border-color: var(--charcoal);
+}
+
+.answer-text {
+  font-size: 16px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.meta-row {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  font-size: 14px;
+}
+
+.citation {
+  color: var(--muted);
+}
+
+.confidence {
+  font-weight: 700;
+}
+
+.verified {
+  color: #2e7d32;
+  font-size: 13px;
+}
+
+.sources {
+  margin-top: 20px;
+}
+
+.sources h3 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--muted);
+  margin: 0 0 12px;
+}
+
+.source {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 10px;
+  background: #fff;
+}
+
+.source-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.source-score {
+  font-weight: 700;
+}
+
+.source-text {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #333;
+}

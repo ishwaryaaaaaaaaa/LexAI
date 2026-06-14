@@ -1,0 +1,34 @@
+# ============================================================
+# LexAI — .gitignore (repo root)
+# ============================================================
+
+# ---- Secrets (CRITICAL — never commit) ----
+.env
+.env.*
+!.env.example
+*.key
+
+# ---- Python / backend ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ---- Vector store / local data (regenerated, not source) ----
+chroma_store/
+*.sqlite3
+
+# ---- Node / frontend ----
+node_modules/
+dist/
+.vite/
+*.local
+
+# ---- OS / editor noise ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
