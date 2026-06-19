@@ -1,10 +1,16 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { supabase } from "./supabaseClient";
+import SignIn from "./SignIn";
 import "./App.css";
 
-// Where the backend lives. (Phase 0 server running on port 8000.)
 const API = "http://localhost:8000";
 
 export default function App() {
+  // ---- Auth state ----
+  const [session, setSession] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+
+  // ---- Chat state (unchanged from Phase 1) ----
   const [papers, setPapers] = useState([]);
   const [question, setQuestion] = useState("");
   const [result, setResult] = useState(null);
@@ -12,7 +18,25 @@ export default function App() {
   const [asking, setAsking] = useState(false);
   const [status, setStatus] = useState("");
 
-  // ---- Upload a .pdf or .txt to the backend (/upload) ----
+  // Check for an existing session, and listen for sign-in/sign-out events.
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setAuthLoading(false);
+    });
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      setSession(newSession);
+    });
+
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  async function handleSignOut() {
+    await supabase.auth.signOut();
+  }
+
+  // ---- Upload ----
   async function handleUpload(e) {
     const file = e.target.files[0];
     if (!file) return;
@@ -29,11 +53,11 @@ export default function App() {
       setStatus("Upload failed. Is the backend running on port 8000?");
     } finally {
       setUploading(false);
-      e.target.value = ""; // allow re-uploading the same file
+      e.target.value = "";
     }
   }
 
-  // ---- Ask a question (/query) ----
+  // ---- Ask ----
   async function handleAsk() {
     if (!question.trim()) return;
     setAsking(true);
@@ -53,30 +77,53 @@ export default function App() {
     }
   }
 
-  // Colour for the confidence label
   const labelColour = (label) =>
     label === "High" ? "#2e7d32" : label === "Medium" ? "#e08600" : "#c62828";
+
+  // ---- Render: gate everything behind auth ----
+  if (authLoading) {
+    return <div className="app"><p>Loading...</p></div>;
+  }
+
+  if (!session) {
+    return <SignIn />;
+  }
+
+  const userName =
+    session.user.user_metadata?.full_name || session.user.email;
 
   return (
     <div className="app">
       <header className="header">
-        <h1 className="wordmark">LEXAI</h1>
-        <p className="tagline">Answers from your documents — cited, scored, verified.</p>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div>
+            <h1 className="wordmark">LEXAI</h1>
+            <p className="tagline">Answers from your documents — cited, scored, verified.</p>
+          </div>
+          <div style={{ textAlign: "right" }}>
+            <p style={{ fontSize: 13, color: "#6b6459", margin: 0 }}>{userName}</p>
+            <button
+              onClick={handleSignOut}
+              style={{
+                background: "none", border: "none", textDecoration: "underline",
+                color: "#6b6459", fontSize: 12, cursor: "pointer", padding: 0,
+              }}
+            >
+              Sign out
+            </button>
+          </div>
+        </div>
       </header>
 
-      {/* Upload */}
       <section className="card">
         <label className="upload-btn">
           {uploading ? "Uploading..." : "Upload a .pdf or .txt"}
           <input type="file" accept=".pdf,.txt" onChange={handleUpload} hidden />
         </label>
-        {papers.length > 0 && (
-          <p className="papers">In your library: {papers.join(", ")}</p>
-        )}
+        {papers.length > 0 && <p className="papers">In your library: {papers.join(", ")}</p>}
         {status && <p className="status">{status}</p>}
       </section>
 
-      {/* Ask */}
       <section className="card">
         <textarea
           className="question"
@@ -90,7 +137,6 @@ export default function App() {
         </button>
       </section>
 
-      {/* Answer */}
       {result && (
         <section className="card answer-card">
           <div className="answer-text">{result.answer}</div>
@@ -99,10 +145,7 @@ export default function App() {
             <div className="meta-row">
               <span className="citation">{result.citation}</span>
               {result.confidence != null && (
-                <span
-                  className="confidence"
-                  style={{ color: labelColour(result.label) }}
-                >
+                <span className="confidence" style={{ color: labelColour(result.label) }}>
                   {result.confidence}% — {result.label}
                 </span>
               )}
