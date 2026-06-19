@@ -1,0 +1,48 @@
+.warning-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #efeae0;
+}
+
+.warning-card {
+  max-width: 480px;
+  width: 100%;
+  padding: 40px 32px;
+}
+
+.warning-title {
+  font-size: 26px;
+  font-weight: 700;
+  color: #1a1a1a;
+  margin: 0 0 20px;
+}
+
+.warning-list {
+  padding-left: 20px;
+  margin: 0 0 28px;
+  color: #1a1a1a;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.warning-list li {
+  margin-bottom: 12px;
+}
+
+.warning-btn {
+  width: 100%;
+  background: #1a1a1a;
+  color: #efeae0;
+  border: none;
+  padding: 13px;
+  border-radius: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.warning-btn:disabled {
+  opacity: 0.5;
+}

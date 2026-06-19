@@ -1,16 +1,18 @@
 import { useState, useEffect } from "react";
 import { supabase } from "./supabaseClient";
 import SignIn from "./SignIn";
+import Onboarding from "./Onboarding";
+import Warning from "./Warning";
 import "./App.css";
 
 const API = "http://localhost:8000";
 
 export default function App() {
-  // ---- Auth state ----
   const [session, setSession] = useState(null);
-  const [authLoading, setAuthLoading] = useState(true);
+  const [profile, setProfile] = useState(null);
+  const [loading, setLoading] = useState(true);
 
-  // ---- Chat state (unchanged from Phase 1) ----
+  // Chat state (unchanged from Phase 1)
   const [papers, setPapers] = useState([]);
   const [question, setQuestion] = useState("");
   const [result, setResult] = useState(null);
@@ -18,25 +20,40 @@ export default function App() {
   const [asking, setAsking] = useState(false);
   const [status, setStatus] = useState("");
 
-  // Check for an existing session, and listen for sign-in/sign-out events.
+  // On load: check session, then load (or notice the absence of) a profile row.
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
-      setAuthLoading(false);
+      if (data.session) loadProfile(data.session.user.id);
+      else setLoading(false);
     });
 
     const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
       setSession(newSession);
+      if (newSession) loadProfile(newSession.user.id);
+      else {
+        setProfile(null);
+        setLoading(false);
+      }
     });
 
     return () => listener.subscription.unsubscribe();
   }, []);
 
+  async function loadProfile(userId) {
+    const { data } = await supabase
+      .from("profiles")
+      .select("*")
+      .eq("id", userId)
+      .maybeSingle(); // null if no row yet -> first-time user
+    setProfile(data);
+    setLoading(false);
+  }
+
   async function handleSignOut() {
     await supabase.auth.signOut();
   }
 
-  // ---- Upload ----
   async function handleUpload(e) {
     const file = e.target.files[0];
     if (!file) return;
@@ -49,7 +66,7 @@ export default function App() {
       const data = await res.json();
       setStatus(`Added "${data.file}" — ${data.chunks} chunks indexed.`);
       setPapers((prev) => [...new Set([...prev, data.file])]);
-    } catch (err) {
+    } catch {
       setStatus("Upload failed. Is the backend running on port 8000?");
     } finally {
       setUploading(false);
@@ -57,7 +74,6 @@ export default function App() {
     }
   }
 
-  // ---- Ask ----
   async function handleAsk() {
     if (!question.trim()) return;
     setAsking(true);
@@ -68,9 +84,8 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question }),
       });
-      const data = await res.json();
-      setResult(data);
-    } catch (err) {
+      setResult(await res.json());
+    } catch {
       setResult({ refused: true, answer: "Request failed. Is the backend running?" });
     } finally {
       setAsking(false);
@@ -80,34 +95,45 @@ export default function App() {
   const labelColour = (label) =>
     label === "High" ? "#2e7d32" : label === "Medium" ? "#e08600" : "#c62828";
 
-  // ---- Render: gate everything behind auth ----
-  if (authLoading) {
-    return <div className="app"><p>Loading...</p></div>;
+  // ---- The gate: decide which screen to show ----
+  if (loading) return <div className="app"><p>Loading...</p></div>;
+  if (!session) return <SignIn />;
+
+  // First-time user: no profile row yet -> onboarding
+  if (!profile) {
+    return (
+      <Onboarding
+        session={session}
+        onComplete={() => loadProfile(session.user.id)}
+      />
+    );
   }
 
-  if (!session) {
-    return <SignIn />;
+  // Profile exists but hasn't accepted the warning yet
+  if (!profile.accepted_warning) {
+    return (
+      <Warning
+        session={session}
+        onAccept={() => loadProfile(session.user.id)}
+      />
+    );
   }
 
-  const userName =
-    session.user.user_metadata?.full_name || session.user.email;
-
+  // Fully onboarded -> show the chat
   return (
     <div className="app">
       <header className="header">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
           <div>
             <h1 className="wordmark">LEXAI</h1>
-            <p className="tagline">Answers from your documents — cited, scored, verified.</p>
+            <p className="tagline">Good to see you, {profile.preferred_name}.</p>
           </div>
           <div style={{ textAlign: "right" }}>
-            <p style={{ fontSize: 13, color: "#6b6459", margin: 0 }}>{userName}</p>
+            <p style={{ fontSize: 13, color: "#6b6459", margin: 0 }}>{profile.preferred_name}</p>
             <button
               onClick={handleSignOut}
-              style={{
-                background: "none", border: "none", textDecoration: "underline",
-                color: "#6b6459", fontSize: 12, cursor: "pointer", padding: 0,
-              }}
+              style={{ background: "none", border: "none", textDecoration: "underline",
+                       color: "#6b6459", fontSize: 12, cursor: "pointer", padding: 0 }}
             >
               Sign out
             </button>
@@ -140,7 +166,6 @@ export default function App() {
       {result && (
         <section className="card answer-card">
           <div className="answer-text">{result.answer}</div>
-
           {!result.refused && result.citation && (
             <div className="meta-row">
               <span className="citation">{result.citation}</span>
@@ -152,7 +177,6 @@ export default function App() {
               {result.verified && <span className="verified">✓ verified</span>}
             </div>
           )}
-
           {result.sources && result.sources.length > 0 && (
             <div className="sources">
               <h3>Supporting evidence</h3>

@@ -1,0 +1,69 @@
+.onboard-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #efeae0;
+}
+
+.onboard-card {
+  max-width: 420px;
+  width: 100%;
+  padding: 40px 32px;
+}
+
+.onboard-title {
+  font-size: 26px;
+  font-weight: 700;
+  color: #1a1a1a;
+  margin: 0 0 6px;
+}
+
+.onboard-sub {
+  font-size: 14px;
+  color: #6b6459;
+  margin: 0 0 28px;
+}
+
+.onboard-label {
+  display: block;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #6b6459;
+  margin: 18px 0 6px;
+}
+
+.onboard-input {
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid #d8d1c4;
+  border-radius: 8px;
+  font-size: 14px;
+  font-family: inherit;
+  background: #fff;
+  color: #1a1a1a;
+}
+
+.onboard-btn {
+  width: 100%;
+  margin-top: 28px;
+  background: #1a1a1a;
+  color: #efeae0;
+  border: none;
+  padding: 13px;
+  border-radius: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.onboard-btn:disabled {
+  opacity: 0.5;
+}
+
+.onboard-error {
+  color: #c62828;
+  font-size: 13px;
+  margin-top: 12px;
+}
