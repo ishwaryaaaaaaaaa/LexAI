@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { supabase } from "./supabaseClient";
+import { recordFile } from "./library";
 import SignIn from "./SignIn";
 import Onboarding from "./Onboarding";
 import Warning from "./Warning";
@@ -12,7 +13,7 @@ export default function App() {
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  // Chat state (unchanged from Phase 1)
+  // Chat state
   const [papers, setPapers] = useState([]);
   const [question, setQuestion] = useState("");
   const [result, setResult] = useState(null);
@@ -20,7 +21,6 @@ export default function App() {
   const [asking, setAsking] = useState(false);
   const [status, setStatus] = useState("");
 
-  // On load: check session, then load (or notice the absence of) a profile row.
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
@@ -45,7 +45,7 @@ export default function App() {
       .from("profiles")
       .select("*")
       .eq("id", userId)
-      .maybeSingle(); // null if no row yet -> first-time user
+      .maybeSingle();
     setProfile(data);
     setLoading(false);
   }
@@ -54,6 +54,7 @@ export default function App() {
     await supabase.auth.signOut();
   }
 
+  // ---- Upload: backend processing + Supabase record ----
   async function handleUpload(e) {
     const file = e.target.files[0];
     if (!file) return;
@@ -66,6 +67,16 @@ export default function App() {
       const data = await res.json();
       setStatus(`Added "${data.file}" — ${data.chunks} chunks indexed.`);
       setPapers((prev) => [...new Set([...prev, data.file])]);
+
+      // Also record this file in Supabase, so the Library can show it.
+      try {
+        await recordFile(session.user.id, data.file, file.type, data.chunks);
+      } catch (libErr) {
+        console.error("Could not save file record to library:", libErr);
+        setStatus(
+          `Added "${data.file}" — ${data.chunks} chunks indexed. (Note: not saved to library yet.)`
+        );
+      }
     } catch {
       setStatus("Upload failed. Is the backend running on port 8000?");
     } finally {
@@ -74,6 +85,7 @@ export default function App() {
     }
   }
 
+  // ---- Ask ----
   async function handleAsk() {
     if (!question.trim()) return;
     setAsking(true);
@@ -95,31 +107,18 @@ export default function App() {
   const labelColour = (label) =>
     label === "High" ? "#2e7d32" : label === "Medium" ? "#e08600" : "#c62828";
 
-  // ---- The gate: decide which screen to show ----
+  // ---- The gate ----
   if (loading) return <div className="app"><p>Loading...</p></div>;
   if (!session) return <SignIn />;
 
-  // First-time user: no profile row yet -> onboarding
   if (!profile) {
-    return (
-      <Onboarding
-        session={session}
-        onComplete={() => loadProfile(session.user.id)}
-      />
-    );
+    return <Onboarding session={session} onComplete={() => loadProfile(session.user.id)} />;
   }
 
-  // Profile exists but hasn't accepted the warning yet
   if (!profile.accepted_warning) {
-    return (
-      <Warning
-        session={session}
-        onAccept={() => loadProfile(session.user.id)}
-      />
-    );
+    return <Warning session={session} onAccept={() => loadProfile(session.user.id)} />;
   }
 
-  // Fully onboarded -> show the chat
   return (
     <div className="app">
       <header className="header">

@@ -1,0 +1,167 @@
+.library-page {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 40px 24px 80px;
+}
+
+.library-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.library-title {
+  font-size: 28px;
+  font-weight: 700;
+  color: #1a1a1a;
+  margin: 0;
+}
+
+.library-close {
+  background: none;
+  border: none;
+  color: #6b6459;
+  font-size: 13px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.scope-all-btn {
+  display: block;
+  width: 100%;
+  background: #1a1a1a;
+  color: #efeae0;
+  border: none;
+  padding: 14px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-bottom: 28px;
+}
+
+.lib-section {
+  margin-bottom: 32px;
+}
+
+.lib-section h2 {
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: #6b6459;
+  margin: 0 0 14px;
+}
+
+.lib-empty {
+  color: #999;
+  font-size: 13px;
+  font-style: italic;
+}
+
+.new-collection-form {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.new-collection-form input {
+  flex: 1;
+  padding: 10px 12px;
+  border: 1px solid #d8d1c4;
+  border-radius: 8px;
+  font-size: 14px;
+  font-family: inherit;
+}
+
+.new-collection-form button {
+  background: #1a1a1a;
+  color: #efeae0;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 18px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.collection-card, .file-card {
+  background: #f6f2ea;
+  border: 1px solid #d8d1c4;
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 10px;
+}
+
+.collection-head, .file-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.collection-name, .file-name {
+  font-weight: 600;
+  color: #1a1a1a;
+  font-size: 15px;
+}
+
+.scope-btn {
+  background: none;
+  border: 1px solid #1a1a1a;
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+  margin-right: 6px;
+  cursor: pointer;
+}
+
+.delete-btn {
+  background: none;
+  border: none;
+  color: #c62828;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.unlink-btn {
+  background: none;
+  border: none;
+  color: #6b6459;
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.file-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 0;
+  font-size: 13px;
+  border-top: 1px solid #e5ddd0;
+}
+
+.file-meta {
+  font-size: 12px;
+  color: #6b6459;
+  margin: 4px 0 8px;
+}
+
+.collection-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tag-toggle {
+  border: 1px solid #d8d1c4;
+  background: #fff;
+  border-radius: 14px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.tag-toggle.active {
+  background: #1a1a1a;
+  color: #efeae0;
+  border-color: #1a1a1a;
+}
