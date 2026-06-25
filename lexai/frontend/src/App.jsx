@@ -4,6 +4,7 @@ import { recordFile } from "./library";
 import SignIn from "./SignIn";
 import Onboarding from "./Onboarding";
 import Warning from "./Warning";
+import Library from "./Library";
 import "./App.css";
 
 const API = "http://localhost:8000";
@@ -20,6 +21,10 @@ export default function App() {
   const [uploading, setUploading] = useState(false);
   const [asking, setAsking] = useState(false);
   const [status, setStatus] = useState("");
+
+  // View + scope state (Phase 4)
+  const [view, setView] = useState("chat"); // "chat" | "library"
+  const [scope, setScope] = useState({ type: "all" }); // all | file | collection
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -54,7 +59,6 @@ export default function App() {
     await supabase.auth.signOut();
   }
 
-  // ---- Upload: backend processing + Supabase record ----
   async function handleUpload(e) {
     const file = e.target.files[0];
     if (!file) return;
@@ -68,14 +72,11 @@ export default function App() {
       setStatus(`Added "${data.file}" — ${data.chunks} chunks indexed.`);
       setPapers((prev) => [...new Set([...prev, data.file])]);
 
-      // Also record this file in Supabase, so the Library can show it.
       try {
         await recordFile(session.user.id, data.file, file.type, data.chunks);
       } catch (libErr) {
         console.error("Could not save file record to library:", libErr);
-        setStatus(
-          `Added "${data.file}" — ${data.chunks} chunks indexed. (Note: not saved to library yet.)`
-        );
+        setStatus(`Added "${data.file}" — ${data.chunks} chunks indexed. (Not saved to library.)`);
       }
     } catch {
       setStatus("Upload failed. Is the backend running on port 8000?");
@@ -85,7 +86,6 @@ export default function App() {
     }
   }
 
-  // ---- Ask ----
   async function handleAsk() {
     if (!question.trim()) return;
     setAsking(true);
@@ -94,7 +94,7 @@ export default function App() {
       const res = await fetch(`${API}/query`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question }),
+        body: JSON.stringify({ question }), // scope filtering arrives once the backend supports it
       });
       setResult(await res.json());
     } catch {
@@ -102,6 +102,11 @@ export default function App() {
     } finally {
       setAsking(false);
     }
+  }
+
+  function handleSelectScope(newScope) {
+    setScope(newScope);
+    setView("chat");
   }
 
   const labelColour = (label) =>
@@ -119,6 +124,16 @@ export default function App() {
     return <Warning session={session} onAccept={() => loadProfile(session.user.id)} />;
   }
 
+  if (view === "library") {
+    return (
+      <Library
+        session={session}
+        onClose={() => setView("chat")}
+        onSelectScope={handleSelectScope}
+      />
+    );
+  }
+
   return (
     <div className="app">
       <header className="header">
@@ -130,6 +145,14 @@ export default function App() {
           <div style={{ textAlign: "right" }}>
             <p style={{ fontSize: 13, color: "#6b6459", margin: 0 }}>{profile.preferred_name}</p>
             <button
+              onClick={() => setView("library")}
+              style={{ background: "none", border: "none", textDecoration: "underline",
+                       color: "#1a1a1a", fontSize: 12, cursor: "pointer", padding: "0 8px 0 0",
+                       fontWeight: 600 }}
+            >
+              Library
+            </button>
+            <button
               onClick={handleSignOut}
               style={{ background: "none", border: "none", textDecoration: "underline",
                        color: "#6b6459", fontSize: 12, cursor: "pointer", padding: 0 }}
@@ -139,6 +162,20 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      {/* Current scope indicator */}
+      <div style={{ fontSize: 13, color: "#6b6459", marginBottom: 10 }}>
+        Asking: <strong>
+          {scope.type === "all" ? "All my files" : scope.name}
+        </strong>{" "}
+        <button
+          onClick={() => setView("library")}
+          style={{ background: "none", border: "none", textDecoration: "underline",
+                   color: "#1a1a1a", fontSize: 12, cursor: "pointer", padding: 0 }}
+        >
+          change
+        </button>
+      </div>
 
       <section className="card">
         <label className="upload-btn">
