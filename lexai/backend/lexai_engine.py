@@ -375,7 +375,7 @@ class LexAIEngine:
         # Layer 6 — Confidence Gate
         best = ranked[0]["score"] if ranked else 0.0
         if best < CONF_THRESHOLD:
-            self.history.append({"q": question, "a": "(refused)"})
+            self.history.setdefault(owner_id, []).append({"q": question, "a": "(refused)"})
             return {"refused": True,
                     "answer": "I don't know — your documents don't contain this.",
                     "citation": None, "confidence": round(best * 100),
@@ -389,7 +389,7 @@ class LexAIEngine:
         confidence = round(best * 100)
         label = "High" if best >= 0.7 else "Medium" if best >= 0.5 else "Low"
 
-        self.history.append({"q": question, "a": answer})
+        self.history.setdefault(owner_id, []).append({"q": question, "a": answer})
         return {
             "refused": False,
             "answer": answer,
@@ -411,14 +411,15 @@ class LexAIEngine:
         return sorted({c["file"] for c in self.chunks if c["owner_id"] == owner_id})
 
     def reset(self, owner_id=None):
-        """Wipe everything (owner_id=None) or just one owner's documents."""
+        """Wipe everything (owner_id=None) or just one owner's documents + history."""
         if owner_id is None:
             self.chroma.delete_collection("lexai")
             self.collection = self.chroma.get_or_create_collection("lexai")
+            self.history = {}
         else:
             existing = self.collection.get(where={"owner_id": owner_id})
             if existing["ids"]:
                 self.collection.delete(ids=existing["ids"])
-        self.history = []
+            self.history.pop(owner_id, None)
         self._rebuild_from_store()
         return {"status": "reset"}
