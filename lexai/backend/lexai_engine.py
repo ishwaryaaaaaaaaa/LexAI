@@ -15,6 +15,11 @@ Pipeline (matches the Backend Documentation):
 
 Plus: intent router + meta path (summaries) and follow-up condensing.
 
+Every chunk is tagged with an owner_id at ingestion time, and every retrieval
+path (semantic, keyword, meta) filters on it unconditionally — documents are
+never visible across users. An optional allowed_files list narrows further
+within that owner's own documents (Library's per-file/collection scope).
+
 This file has NO web server. It's just a class the API calls.
 """
 
@@ -95,12 +100,14 @@ class LexAIEngine:
             print(f"WARNING: no API key found in {prov['key_env']} — generation will fail.")
 
         # In-memory state, rebuilt from Chroma so Chroma is the single source of truth.
-        self.chunks = []      # list of {"text", "file", "page", "id"}
-        self.bm25 = None      # BM25 index (Layer 3 keyword side)
-        self.history = []     # simple chat history for follow-up condensing
+        # self.chunks holds every owner's chunks; retrieval always filters by owner_id.
+        self.chunks = []      # list of {"id", "text", "file", "page", "owner_id"}
+        self.bm25 = None      # BM25 index (Layer 3 keyword side), built over all chunks
+        self.history = {}     # owner_id -> list of {"q", "a"} turns, for follow-up condensing
         self._rebuild_from_store()
 
-        print(f"Engine ready. {len(self.list_papers())} paper(s), {len(self.chunks)} chunks.")
+        total_papers = len({c["file"] for c in self.chunks})
+        print(f"Engine ready. {total_papers} paper(s) total, {len(self.chunks)} chunks.")
 
     # ==================================================================
     # LAYER 1 — Smart Ingestion
@@ -142,7 +149,7 @@ class LexAIEngine:
     # ==================================================================
     # LAYER 2 — Semantic Chunking
     # ==================================================================
-    def _chunk_page(self, page_text, file, page):
+    def _chunk_page(self, page_text, file, page, owner_id):
         sentences = _split_sentences(page_text)
         chunks, current, count = [], [], 0
         for s in sentences:
@@ -161,12 +168,12 @@ class LexAIEngine:
                 current, count = tail, tw
         if current:
             chunks.append(" ".join(current))
-        return [{"text": c, "file": file, "page": page} for c in chunks]
+        return [{"text": c, "file": file, "page": page, "owner_id": owner_id} for c in chunks]
 
     # ==================================================================
     # Ingest one document end-to-end (Layers 1 -> 2 -> store)
     # ==================================================================
-    def add_document(self, path, filename):
+    def add_document(self, path, filename, owner_id):
         ext = Path(filename).suffix.lower()
         if ext == ".pdf":
             pages = self._extract_pdf(path)
@@ -178,7 +185,7 @@ class LexAIEngine:
         new_chunks = []
         for pno, ptext in enumerate(pages, start=1):
             ptext = self._strip_references(ptext)
-            new_chunks.extend(self._chunk_page(ptext, filename, pno))
+            new_chunks.extend(self._chunk_page(ptext, filename, pno, owner_id))
 
         if not new_chunks:
             return {"file": filename, "chunks": 0, "note": "No extractable text (scanned PDF?)."}
@@ -188,19 +195,21 @@ class LexAIEngine:
         embeddings = self.embedder.encode(texts, normalize_embeddings=True).tolist()
         base = self.collection.count()
         ids = [f"{filename}_{base + i}" for i in range(len(new_chunks))]
-        metadatas = [{"file": c["file"], "page": c["page"]} for c in new_chunks]
+        metadatas = [{"file": c["file"], "page": c["page"], "owner_id": c["owner_id"]}
+                     for c in new_chunks]
 
         self.collection.add(ids=ids, embeddings=embeddings, documents=texts, metadatas=metadatas)
         self._rebuild_from_store()
         return {"file": filename, "chunks": len(new_chunks)}
 
     def _rebuild_from_store(self):
-        """Reload all chunks from Chroma and rebuild the BM25 keyword index."""
+        """Reload all chunks (every owner) from Chroma and rebuild the BM25 index."""
         data = self.collection.get(include=["documents", "metadatas"])
         self.chunks = []
         for cid, doc, meta in zip(data["ids"], data["documents"], data["metadatas"]):
             self.chunks.append({"id": cid, "text": doc,
-                                "file": meta.get("file"), "page": meta.get("page")})
+                                "file": meta.get("file"), "page": meta.get("page"),
+                                "owner_id": meta.get("owner_id")})
         if self.chunks:
             tokenized = [c["text"].lower().split() for c in self.chunks]
             self.bm25 = BM25Okapi(tokenized)
@@ -208,22 +217,37 @@ class LexAIEngine:
             self.bm25 = None
 
     # ==================================================================
-    # LAYER 3 — Hybrid Retrieval
+    # LAYER 3 — Hybrid Retrieval (owner_id filtering is mandatory here)
     # ==================================================================
-    def _semantic_search(self, query, k=10):
+    def _semantic_search(self, query, owner_id, k=10, allowed_files=None):
         q_emb = self.embedder.encode(
             "Represent this sentence for searching relevant passages: " + query,
             normalize_embeddings=True,
         ).tolist()
-        res = self.collection.query(query_embeddings=[q_emb], n_results=k)
+        where = {"owner_id": owner_id}
+        if allowed_files:
+            where = {"$and": [{"owner_id": owner_id}, {"file": {"$in": allowed_files}}]}
+        res = self.collection.query(query_embeddings=[q_emb], n_results=k, where=where)
         return res["ids"][0] if res["ids"] else []
 
-    def _keyword_search(self, query, k=10):
+    def _keyword_search(self, query, owner_id, k=10, allowed_files=None):
         if not self.bm25:
             return []
         scores = self.bm25.get_scores(query.lower().split())
-        top_idx = np.argsort(scores)[::-1][:k]
-        return [self.chunks[i]["id"] for i in top_idx if scores[i] > 0]
+        order = np.argsort(scores)[::-1]
+        ids = []
+        for i in order:
+            if scores[i] <= 0:
+                break  # sorted descending, so nothing after this is usable
+            c = self.chunks[i]
+            if c["owner_id"] != owner_id:
+                continue
+            if allowed_files and c["file"] not in allowed_files:
+                continue
+            ids.append(c["id"])
+            if len(ids) >= k:
+                break
+        return ids
 
     # ==================================================================
     # LAYER 4 — Reciprocal Rank Fusion
@@ -288,18 +312,20 @@ class LexAIEngine:
             return True  # don't block the answer if the check itself fails
 
     # ==================================================================
-    # Intent router + meta path (summaries bypass retrieval)
+    # Intent router + meta path (summaries bypass retrieval, NOT owner filtering)
     # ==================================================================
     def _is_meta(self, query):
         q = query.lower()
         return any(w in q for w in ["summar", "overview", "what is this", "what's this",
                                     "tldr", "main points", "about this"])
 
-    def _meta_answer(self, query):
-        if not self.chunks:
+    def _meta_answer(self, query, owner_id, allowed_files=None):
+        owner_chunks = [c for c in self.chunks if c["owner_id"] == owner_id
+                        and (not allowed_files or c["file"] in allowed_files)]
+        if not owner_chunks:
             return None
-        n = len(self.chunks)
-        sample = [self.chunks[0], self.chunks[n // 2], self.chunks[-1]]
+        n = len(owner_chunks)
+        sample = [owner_chunks[0], owner_chunks[n // 2], owner_chunks[-1]]
         answer = self._generate(query, sample)
         return {
             "refused": False, "meta": True, "answer": answer,
@@ -309,10 +335,11 @@ class LexAIEngine:
     # ==================================================================
     # Follow-up condensing (runs BEFORE the gate — the ordering fix)
     # ==================================================================
-    def _condense(self, query):
-        if not self.history:
+    def _condense(self, query, owner_id):
+        history = self.history.get(owner_id, [])
+        if not history:
             return query
-        recent = "\n".join(f"Q: {h['q']}\nA: {h['a']}" for h in self.history[-2:])
+        recent = "\n".join(f"Q: {h['q']}\nA: {h['a']}" for h in history[-2:])
         system = "Rewrite the follow-up as a standalone question. Output only the question."
         user = f"Chat so far:\n{recent}\n\nFollow-up: {query}\n\nStandalone question:"
         try:
@@ -323,22 +350,25 @@ class LexAIEngine:
     # ==================================================================
     # The full query path
     # ==================================================================
-    def query(self, question):
-        if not self.chunks:
+    def query(self, question, owner_id, allowed_files=None):
+        if not self.list_papers(owner_id):
             return {"refused": True, "answer": "No documents uploaded yet.",
                     "citation": None, "confidence": None, "label": None, "sources": []}
 
-        # Meta/summary questions skip retrieval entirely.
+        # Meta/summary questions skip retrieval entirely, but still stay owner-scoped.
         if self._is_meta(question):
-            result = self._meta_answer(question)
-            self.history.append({"q": question, "a": result["answer"]})
+            result = self._meta_answer(question, owner_id, allowed_files)
+            if result is None:
+                result = {"refused": True, "answer": "No documents uploaded yet.",
+                          "citation": None, "confidence": None, "label": None, "sources": []}
+            self.history.setdefault(owner_id, []).append({"q": question, "a": result["answer"]})
             return result
 
         # Resolve pronouns in follow-ups FIRST, then retrieve.
-        resolved = self._condense(question)
+        resolved = self._condense(question, owner_id)
 
-        sem = self._semantic_search(resolved, k=10)      # Layer 3a
-        kw = self._keyword_search(resolved, k=10)        # Layer 3b
+        sem = self._semantic_search(resolved, owner_id, k=10, allowed_files=allowed_files)   # Layer 3a
+        kw = self._keyword_search(resolved, owner_id, k=10, allowed_files=allowed_files)     # Layer 3b
         fused = self._rrf(sem, kw, top=10)               # Layer 4
         ranked = self._rerank(resolved, fused, top=5)    # Layer 5
 
@@ -377,14 +407,18 @@ class LexAIEngine:
     # ==================================================================
     # Library / admin helpers
     # ==================================================================
-    def list_papers(self):
-        return sorted({c["file"] for c in self.chunks})
+    def list_papers(self, owner_id):
+        return sorted({c["file"] for c in self.chunks if c["owner_id"] == owner_id})
 
-    def reset(self):
-        self.chroma.delete_collection("lexai")
-        self.collection = self.chroma.get_or_create_collection("lexai")
+    def reset(self, owner_id=None):
+        """Wipe everything (owner_id=None) or just one owner's documents."""
+        if owner_id is None:
+            self.chroma.delete_collection("lexai")
+            self.collection = self.chroma.get_or_create_collection("lexai")
+        else:
+            existing = self.collection.get(where={"owner_id": owner_id})
+            if existing["ids"]:
+                self.collection.delete(ids=existing["ids"])
         self.history = []
         self._rebuild_from_store()
         return {"status": "reset"}
-    
-    

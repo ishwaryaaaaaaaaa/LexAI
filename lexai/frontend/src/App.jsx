@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { supabase } from "./supabaseClient";
-import { recordFile } from "./library";
+import { recordFile, getFileIdsInCollection, listFiles } from "./library";
 import SignIn from "./SignIn";
 import Onboarding from "./Onboarding";
 import Warning from "./Warning";
@@ -67,6 +67,7 @@ export default function App() {
     try {
       const form = new FormData();
       form.append("file", file);
+      form.append("owner_id", session.user.id);
       const res = await fetch(`${API}/upload`, { method: "POST", body: form });
       const data = await res.json();
       setStatus(`Added "${data.file}" — ${data.chunks} chunks indexed.`);
@@ -91,10 +92,20 @@ export default function App() {
     setAsking(true);
     setResult(null);
     try {
+      const body = { question, owner_id: session.user.id };
+      if (scope.type === "file") {
+        body.files = [scope.name];
+      } else if (scope.type === "collection") {
+        const fileIds = await getFileIdsInCollection(scope.id);
+        const allFiles = await listFiles(session.user.id);
+        body.files = allFiles
+          .filter((f) => fileIds.includes(f.id))
+          .map((f) => f.filename);
+      }
       const res = await fetch(`${API}/query`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question }), // scope filtering arrives once the backend supports it
+        body: JSON.stringify(body),
       });
       setResult(await res.json());
     } catch {

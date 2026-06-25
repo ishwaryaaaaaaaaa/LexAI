@@ -18,8 +18,9 @@ Run it:
 import os
 import tempfile
 from pathlib import Path
+from typing import List, Optional
 
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -45,22 +46,26 @@ engine = LexAIEngine()
 
 class QueryIn(BaseModel):
     question: str
+    owner_id: str
+    files: Optional[List[str]] = None  # scope to specific filenames (Library "ask this file/collection")
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "papers": len(engine.list_papers()), "chunks": len(engine.chunks)}
+    total_papers = len({c["file"] for c in engine.chunks})
+    return {"status": "ok", "papers": total_papers, "chunks": len(engine.chunks)}
 
 
 @app.post("/upload")
-async def upload(file: UploadFile = File(...)):
-    # Save the uploaded file to a temp path, then hand it to the engine.
+async def upload(file: UploadFile = File(...), owner_id: str = Form(...)):
+    # TODO: once real auth is wired up, derive owner_id from a verified Supabase
+    # JWT instead of trusting this form field.
     suffix = Path(file.filename).suffix
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(await file.read())
         tmp_path = tmp.name
     try:
-        result = engine.add_document(tmp_path, file.filename)
+        result = engine.add_document(tmp_path, file.filename, owner_id)
     finally:
         os.unlink(tmp_path)
     return result
@@ -68,12 +73,12 @@ async def upload(file: UploadFile = File(...)):
 
 @app.post("/query")
 def query(body: QueryIn):
-    return engine.query(body.question)
+    return engine.query(body.question, body.owner_id, allowed_files=body.files)
 
 
 @app.get("/papers")
-def papers():
-    return {"papers": engine.list_papers()}
+def papers(owner_id: str):
+    return {"papers": engine.list_papers(owner_id)}
 
 
 @app.post("/reset")
