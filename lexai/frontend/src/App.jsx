@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { supabase } from "./supabaseClient";
-import { recordFile, getFileIdsInCollection, listFiles } from "./library";
+import { recordFile, getFileIdsInCollection, listFiles } from "./libraryApi";
 import SignIn from "./SignIn";
 import Onboarding from "./Onboarding";
 import Warning from "./Warning";

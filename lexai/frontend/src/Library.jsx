@@ -3,7 +3,7 @@ import {
   listFiles, deleteFile,
   listCollections, createCollection, deleteCollection,
   addFileToCollection, removeFileFromCollection, getCollectionsForFile,
-} from "./library";
+} from "./libraryApi";
 import "./Library.css";
 
 export default function Library({ session, onClose, onSelectScope }) {
