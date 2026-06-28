@@ -70,14 +70,15 @@ export default function App() {
       form.append("owner_id", session.user.id);
       const res = await fetch(`${API}/upload`, { method: "POST", body: form });
       const data = await res.json();
-      setStatus(`Added "${data.file}" — ${data.chunks} chunks indexed.`);
+      setStatus(`Added "${data.file}" — ${data.chunks} chunks indexed. Now asking this file only.`);
       setPapers((prev) => [...new Set([...prev, data.file])]);
+      setScope({ type: "file", name: data.file });
 
       try {
         await recordFile(session.user.id, data.file, file.type, data.chunks);
       } catch (libErr) {
         console.error("Could not save file record to library:", libErr);
-        setStatus(`Added "${data.file}" — ${data.chunks} chunks indexed. (Not saved to library.)`);
+        setStatus(`Added "${data.file}" — ${data.chunks} chunks indexed. Now asking this file only. (Not saved to library.)`);
       }
     } catch {
       setStatus("Upload failed. Is the backend running on port 8000?");
