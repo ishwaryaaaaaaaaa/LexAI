@@ -274,6 +274,12 @@ new_rag/
 │   │   ├── api.py               # FastAPI server — all endpoints
 │   │   ├── Evaluvate.py         # RAGAS evaluation suite
 │   │   ├── chroma_store/        # ChromaDB persistent vector store
+│   │   ├── mcp_server/          # MCP server — exposes backend as Claude Desktop tools
+│   │   │   ├── server.py        # FastMCP server with 3 tools
+│   │   │   ├── requirements.txt # mcp[cli], httpx, python-dotenv
+│   │   │   ├── .env             # LEXAI_BACKEND_URL + LEXAI_OWNER_ID (never committed)
+│   │   │   ├── .env.example     # Template
+│   │   │   └── README.md        # Setup + Claude Desktop config instructions
 │   │   ├── .env                 # API keys (never committed)
 │   │   ├── .env.example         # Template — required keys
 │   │   └── requirements.txt     # Backend dependencies
@@ -375,12 +381,59 @@ python Evaluvate.py
 
 ---
 
+## MCP Server — Use LexAI from Claude Desktop
+
+LexAI ships with a [Model Context Protocol](https://modelcontextprotocol.io) server that exposes the backend as tools any MCP client can call. Once configured, Claude Desktop can query your documents, upload new files, and list your library — all from a conversation, with no browser needed.
+
+The MCP server is a **separate small process** (`mcp_server/server.py`). It does not modify `api.py` or `lexai_engine.py` — it simply proxies tool calls over HTTP to the existing backend.
+
+### Tools
+
+| Tool | What it does |
+|---|---|
+| `ask_lexai(question)` | Runs the full 7-layer RAG pipeline and returns the answer, source citation, confidence, and verification status |
+| `upload_to_lexai(file_path)` | Reads a local PDF or .txt file and indexes it into your library |
+| `list_lexai_documents()` | Lists all documents currently indexed under your owner ID |
+
+### Setup
+
+```bash
+# Dependencies are already in the existing venv (mcp 1.28.1 is installed)
+# Just configure .env and point Claude Desktop at the server
+
+cd lexai/backend/mcp_server
+cp .env.example .env
+# Set LEXAI_OWNER_ID in .env to your owner ID
+```
+
+### Connecting Claude Desktop
+
+Add this to `%APPDATA%\Claude\claude_desktop_config.json` (Windows) or `~/Library/Application Support/Claude/claude_desktop_config.json` (Mac):
+
+```json
+{
+  "mcpServers": {
+    "lexai": {
+      "command": "C:\\dev\\new_rag\\lexai\\backend\\.venv\\Scripts\\python.exe",
+      "args": ["C:\\dev\\new_rag\\lexai\\backend\\mcp_server\\server.py"]
+    }
+  }
+}
+```
+
+Restart Claude Desktop. The three tools appear in the tool picker in any new conversation. The LexAI backend must be running on port 8000.
+
+> **Single-user / demo mode:** the server uses one fixed `LEXAI_OWNER_ID` from `.env` for every call. For multi-user support, `owner_id` would need to be passed as a tool parameter with per-user auth at the MCP transport layer.
+
+---
+
 ## Stack
 
 | Component | Technology | Purpose |
 |---|---|---|
 | Backend framework | FastAPI + uvicorn | HTTP API server |
 | Frontend | React + Vite | Document library UI |
+| MCP server | `mcp` SDK 1.28.1 (FastMCP) | Expose backend as Claude Desktop tools |
 | Vector DB | ChromaDB (persistent) | Semantic search storage |
 | Embeddings | BAAI/bge-small-en-v1.5 | Local text encoding (384-dim) |
 | Keyword search | BM25Okapi (rank-bm25) | Exact term matching |
