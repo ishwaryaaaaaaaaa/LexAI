@@ -282,7 +282,7 @@ class LexAIEngine:
             model=self.llm_model,
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
-            temperature=0.2,
+            temperature=0,
         )
         return resp.choices[0].message.content.strip()
 
@@ -291,9 +291,15 @@ class LexAIEngine:
             f"[{c['file']} p.{c['page']}] {c['text']}" for c in chunks
         )
         system = (
-            "You are LexAI. Answer ONLY using the provided sources. "
-            "If the sources do not contain the answer, say you don't know. "
-            "Never use outside knowledge. Be concise."
+            "You are LexAI, a document QA assistant. Answer the question using ONLY "
+            "the exact content of the provided sources.\n\n"
+            "Rules you must follow without exception:\n"
+            "1. Use ONLY information explicitly stated in the sources. "
+            "Do NOT infer, extrapolate, or use any outside knowledge.\n"
+            "2. If the sources do not contain enough information to answer, respond with exactly: "
+            "'The provided documents do not contain this information.'\n"
+            "3. Be concise and direct — answer in one to three sentences.\n"
+            "4. Do NOT add disclaimers, caveats, or filler beyond what the sources say."
         )
         user = f"Sources:\n{context}\n\nQuestion: {query}\n\nAnswer:"
         return self._ask_llm(system, user)
