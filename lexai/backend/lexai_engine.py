@@ -373,9 +373,9 @@ class LexAIEngine:
         # Resolve pronouns in follow-ups FIRST, then retrieve.
         resolved = self._condense(question, owner_id)
 
-        sem = self._semantic_search(resolved, owner_id, k=10, allowed_files=allowed_files)   # Layer 3a
-        kw = self._keyword_search(resolved, owner_id, k=10, allowed_files=allowed_files)     # Layer 3b
-        fused = self._rrf(sem, kw, top=10)               # Layer 4
+        sem = self._semantic_search(resolved, owner_id, k=15, allowed_files=allowed_files)   # Layer 3a
+        kw = self._keyword_search(resolved, owner_id, k=15, allowed_files=allowed_files)     # Layer 3b
+        fused = self._rrf(sem, kw, top=15)               # Layer 4
         ranked = self._rerank(resolved, fused, top=5)    # Layer 5
 
         # Layer 6 — Confidence Gate
@@ -387,11 +387,15 @@ class LexAIEngine:
                     "citation": None, "confidence": round(best * 100),
                     "label": "Low", "sources": []}
 
-        # Generate + verify (Layer 7)
-        answer = self._generate(resolved, ranked)
-        verified = self._verify(answer, ranked)
+        # Drop chunks that scored too low to be useful — improves context precision.
+        MIN_CHUNK_SCORE = 0.25
+        grounded = [c for c in ranked if c["score"] >= MIN_CHUNK_SCORE] or ranked[:1]
 
-        top = ranked[0]
+        # Generate + verify (Layer 7)
+        answer = self._generate(resolved, grounded)
+        verified = self._verify(answer, grounded)
+
+        top = grounded[0]
         confidence = round(best * 100)
         label = "High" if best >= 0.7 else "Medium" if best >= 0.5 else "Low"
 
@@ -406,7 +410,7 @@ class LexAIEngine:
             "sources": [
                 {"file": c["file"], "page": c["page"],
                  "score": round(c["score"] * 100), "text": c["text"][:400]}
-                for c in ranked
+                for c in grounded
             ],
         }
 
