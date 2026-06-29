@@ -102,9 +102,15 @@ TEST_SET = [
 ]
 
 
+EVAL_FILES = ["SOP.pdf", "final submission.pdf"]
+
 def ask_lexai(question):
     """Call the real /query endpoint and return (answer, contexts)."""
-    resp = requests.post(f"{API}/query", json={"question": question, "owner_id": "5088c937-e178-4d1f-9319-13936e2776b1"})
+    resp = requests.post(f"{API}/query", json={
+        "question": question,
+        "owner_id": "5088c937-e178-4d1f-9319-13936e2776b1",
+        "files": EVAL_FILES,
+    })
     resp.raise_for_status()
     data = resp.json()
     answer = data.get("answer", "")
