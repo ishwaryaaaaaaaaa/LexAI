@@ -1,0 +1,10 @@
+# LexAI MCP Server dependencies
+# Install into a fresh venv:
+#   python -m venv .venv
+#   .venv\Scripts\activate          (Windows)
+#   source .venv/bin/activate       (Mac / Linux)
+#   pip install -r requirements.txt
+
+mcp[cli]>=1.0.0       # Official MCP Python SDK — includes FastMCP and stdio transport
+httpx>=0.27.0         # HTTP client to call the existing LexAI FastAPI backend
+python-dotenv>=1.0.0  # Read LEXAI_BACKEND_URL and LEXAI_OWNER_ID from .env
