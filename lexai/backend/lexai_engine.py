@@ -1,4 +1,4 @@
-"""
+﻿"""
 lexai_engine.py
 ================
 The LexAI RAG engine — all 7 anti-hallucination layers in one readable file.
@@ -57,7 +57,7 @@ OVERLAP_WORDS = 40
 _PROVIDERS = {
     "nvidia": {
         "base_url": "https://integrate.api.nvidia.com/v1",
-        "model": "meta/llama-3.1-8b-instruct",
+        "model": "openai/gpt-oss-20b",
         "key_env": "NVIDIA_API_KEY",
     },
     "groq": {
@@ -283,8 +283,9 @@ class LexAIEngine:
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
             temperature=0,
+            max_tokens=2048,
         )
-        return resp.choices[0].message.content.strip()
+        return (resp.choices[0].message.content or "").strip()
 
     def _generate(self, query, chunks):
         context = "\n\n".join(
@@ -433,3 +434,5 @@ class LexAIEngine:
             self.history.pop(owner_id, None)
         self._rebuild_from_store()
         return {"status": "reset"}
+
+

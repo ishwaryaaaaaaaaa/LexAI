@@ -1,4 +1,4 @@
-"""
+﻿"""
 evaluate.py
 ===========
 Runs a RAGAS evaluation against the live LexAI backend.
@@ -147,7 +147,8 @@ def main():
     judge = ChatOpenAI(
         base_url="https://integrate.api.nvidia.com/v1",
         api_key=os.getenv("NVIDIA_API_KEY") or "",  # type: ignore[arg-type]
-        model="meta/llama-3.1-8b-instruct",
+        model="openai/gpt-oss-20b",
+        max_tokens=4096,
         temperature=0,
     )
     ragas_llm = LangchainLLMWrapper(judge)
@@ -179,3 +180,4 @@ if __name__ == "__main__":
     main()
 
     
+
