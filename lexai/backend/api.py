@@ -48,6 +48,7 @@ class QueryIn(BaseModel):
     question: str
     owner_id: str
     files: Optional[List[str]] = None  # scope to specific filenames (Library "ask this file/collection")
+    debug: Optional[bool] = False  # opt-in diagnostic tracing; see lexai_engine.query()
 
 
 @app.get("/health")
@@ -73,7 +74,7 @@ async def upload(file: UploadFile = File(...), owner_id: str = Form(...)):
 
 @app.post("/query")
 def query(body: QueryIn):
-    return engine.query(body.question, body.owner_id, allowed_files=body.files)
+    return engine.query(body.question, body.owner_id, allowed_files=body.files, debug=body.debug)
 
 
 @app.get("/papers")

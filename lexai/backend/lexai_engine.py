@@ -26,6 +26,7 @@ This file has NO web server. It's just a class the API calls.
 import os
 import re
 import math
+import time
 from pathlib import Path
 
 import pymupdf  # PyMuPDF
@@ -265,19 +266,34 @@ class LexAIEngine:
     # ==================================================================
     # LAYER 5 — Reranker (logit -> sigmoid; the bug-fix from the doc)
     # ==================================================================
-    def _rerank(self, query, candidates, top=5):
+    def _rerank(self, query, candidates, top=5, debug_info=None):
         if not candidates:
+            if debug_info is not None:
+                debug_info["reranker"] = {"top5_raw_logits": [], "top5_sigmoid_scores": [], "best_score": None}
             return []
         pairs = [[query, c["text"]] for c in candidates]
         logits = self.reranker.predict(pairs)  # raw logits, NOT 0..1
+        raw_by_id = {}
         for c, logit in zip(candidates, logits):
-            c["score"] = _sigmoid(float(logit))  # normalize BEFORE the gate
-        return sorted(candidates, key=lambda c: c["score"], reverse=True)[:top]
+            raw = float(logit)
+            c["score"] = _sigmoid(raw)  # normalize BEFORE the gate
+            if debug_info is not None:
+                raw_by_id[c["id"]] = raw
+        ranked = sorted(candidates, key=lambda c: c["score"], reverse=True)
+        if debug_info is not None:
+            top5 = ranked[:5]
+            debug_info["reranker"] = {
+                "top5_raw_logits": [raw_by_id[c["id"]] for c in top5],
+                "top5_sigmoid_scores": [c["score"] for c in top5],
+                "best_score": ranked[0]["score"] if ranked else None,
+            }
+        return ranked[:top]
 
     # ==================================================================
     # Generation
     # ==================================================================
-    def _ask_llm(self, system, user):
+    def _ask_llm(self, system, user, purpose=None, calls_log=None):
+        t0 = time.perf_counter() if calls_log is not None else None
         resp = self.llm.chat.completions.create(
             model=self.llm_model,
             messages=[{"role": "system", "content": system},
@@ -285,9 +301,20 @@ class LexAIEngine:
             temperature=0,
             max_tokens=2048,
         )
-        return (resp.choices[0].message.content or "").strip()
+        content = (resp.choices[0].message.content or "").strip()
+        if calls_log is not None:
+            usage = getattr(resp, "usage", None)
+            calls_log.append({
+                "purpose": purpose,
+                "model": self.llm_model,
+                "duration_ms": (time.perf_counter() - t0) * 1000,
+                "prompt_tokens": getattr(usage, "prompt_tokens", None),
+                "completion_tokens": getattr(usage, "completion_tokens", None),
+                "finish_reason": resp.choices[0].finish_reason,
+            })
+        return content
 
-    def _generate(self, query, chunks):
+    def _generate(self, query, chunks, calls_log=None):
         context = "\n\n".join(
             f"[{c['file']} p.{c['page']}] {c['text']}" for c in chunks
         )
@@ -303,19 +330,29 @@ class LexAIEngine:
             "4. Do NOT add disclaimers, caveats, or filler beyond what the sources say."
         )
         user = f"Sources:\n{context}\n\nQuestion: {query}\n\nAnswer:"
-        return self._ask_llm(system, user)
+        return self._ask_llm(system, user, purpose="generate", calls_log=calls_log)
 
     # ==================================================================
     # LAYER 7 — Faithfulness Verification
     # ==================================================================
-    def _verify(self, answer, chunks):
+    def _verify(self, answer, chunks, calls_log=None, debug_out=None):
         context = "\n\n".join(c["text"] for c in chunks)
         system = "You check if an answer is fully supported by the sources. Reply only YES or NO."
         user = f"Sources:\n{context}\n\nAnswer:\n{answer}\n\nIs every claim supported? YES or NO:"
         try:
-            verdict = self._ask_llm(system, user).upper()
-            return verdict.startswith("YES")
-        except Exception:
+            raw = self._ask_llm(system, user, purpose="verify", calls_log=calls_log)
+            verdict = raw.upper()
+            result = verdict.startswith("YES")
+            if debug_out is not None:
+                debug_out["verdict_text"] = raw
+                debug_out["result"] = result
+                debug_out["exception"] = None
+            return result
+        except Exception as e:
+            if debug_out is not None:
+                debug_out["verdict_text"] = None
+                debug_out["result"] = True
+                debug_out["exception"] = str(e)
             return True  # don't block the answer if the check itself fails
 
     # ==================================================================
@@ -326,14 +363,14 @@ class LexAIEngine:
         return any(w in q for w in ["summar", "overview", "what is this", "what's this",
                                     "tldr", "main points", "about this"])
 
-    def _meta_answer(self, query, owner_id, allowed_files=None):
+    def _meta_answer(self, query, owner_id, allowed_files=None, calls_log=None):
         owner_chunks = [c for c in self.chunks if c["owner_id"] == owner_id
                         and (not allowed_files or c["file"] in allowed_files)]
         if not owner_chunks:
             return None
         n = len(owner_chunks)
         sample = [owner_chunks[0], owner_chunks[n // 2], owner_chunks[-1]]
-        answer = self._generate(query, sample)
+        answer = self._generate(query, sample, calls_log=calls_log)
         return {
             "refused": False, "meta": True, "answer": answer,
             "citation": None, "confidence": None, "label": None, "sources": [],
@@ -342,7 +379,7 @@ class LexAIEngine:
     # ==================================================================
     # Follow-up condensing (runs BEFORE the gate — the ordering fix)
     # ==================================================================
-    def _condense(self, query, owner_id):
+    def _condense(self, query, owner_id, calls_log=None):
         history = self.history.get(owner_id, [])
         if not history:
             return query
@@ -350,58 +387,150 @@ class LexAIEngine:
         system = "Rewrite the follow-up as a standalone question. Output only the question."
         user = f"Chat so far:\n{recent}\n\nFollow-up: {query}\n\nStandalone question:"
         try:
-            return self._ask_llm(system, user)
+            return self._ask_llm(system, user, purpose="condense", calls_log=calls_log)
         except Exception:
             return query
 
     # ==================================================================
     # The full query path
     # ==================================================================
-    def query(self, question, owner_id, allowed_files=None):
+    def query(self, question, owner_id, allowed_files=None, debug=False):
+        dbg = {"stages_ms": {}, "llm_calls": [], "counts": {}} if debug else None
+        t_total = time.perf_counter() if debug else None
+
         if not self.list_papers(owner_id):
-            return {"refused": True, "answer": "No documents uploaded yet.",
+            result = {"refused": True, "answer": "No documents uploaded yet.",
                     "citation": None, "confidence": None, "label": None, "sources": []}
+            if debug:
+                dbg["refusal_path"] = "refused=True: no documents uploaded for this owner_id (list_papers empty)"
+                dbg["stages_ms"]["total"] = (time.perf_counter() - t_total) * 1000
+                result["debug"] = dbg
+            return result
 
         # Meta/summary questions skip retrieval entirely, but still stay owner-scoped.
         if self._is_meta(question):
-            result = self._meta_answer(question, owner_id, allowed_files)
+            t0 = time.perf_counter() if debug else None
+            result = self._meta_answer(question, owner_id, allowed_files,
+                                        calls_log=(dbg["llm_calls"] if debug else None))
             if result is None:
                 result = {"refused": True, "answer": "No documents uploaded yet.",
                           "citation": None, "confidence": None, "label": None, "sources": []}
+                refusal_note = "refused=True: meta path matched but owner has no chunks (allowed_files filter or no uploads)"
+            else:
+                refusal_note = "refused=False: meta path (_is_meta matched) bypasses the confidence gate entirely"
             self.history.setdefault(owner_id, []).append({"q": question, "a": result["answer"]})
+            if debug:
+                dbg["stages_ms"]["meta_generate"] = (time.perf_counter() - t0) * 1000
+                dbg["refusal_path"] = refusal_note
+                dbg["stages_ms"]["total"] = (time.perf_counter() - t_total) * 1000
+                result["debug"] = dbg
             return result
 
         # Resolve pronouns in follow-ups FIRST, then retrieve.
-        resolved = self._condense(question, owner_id)
+        t0 = time.perf_counter() if debug else None
+        resolved = self._condense(question, owner_id, calls_log=(dbg["llm_calls"] if debug else None))
+        if debug:
+            dbg["stages_ms"]["condense"] = (time.perf_counter() - t0) * 1000
+            dbg["condensed_question"] = resolved
 
+        t0 = time.perf_counter() if debug else None
         sem = self._semantic_search(resolved, owner_id, k=15, allowed_files=allowed_files)   # Layer 3a
+        if debug:
+            dbg["stages_ms"]["semantic_retrieval"] = (time.perf_counter() - t0) * 1000
+
+        t0 = time.perf_counter() if debug else None
         kw = self._keyword_search(resolved, owner_id, k=15, allowed_files=allowed_files)     # Layer 3b
+        if debug:
+            dbg["stages_ms"]["bm25_retrieval"] = (time.perf_counter() - t0) * 1000
+            dbg["counts"]["from_semantic"] = len(sem)
+            dbg["counts"]["from_bm25"] = len(kw)
+
+        t0 = time.perf_counter() if debug else None
         fused = self._rrf(sem, kw, top=15)               # Layer 4
-        ranked = self._rerank(resolved, fused, top=5)    # Layer 5
+        if debug:
+            dbg["stages_ms"]["rrf"] = (time.perf_counter() - t0) * 1000
+            dbg["counts"]["after_rrf"] = len(fused)
+            dbg["counts"]["sent_to_reranker"] = len(fused)
+            fused_texts = [c["text"] for c in fused]
+            dbg["duplicate_chunk_texts_in_candidates"] = len(fused_texts) != len(set(fused_texts))
+
+        t0 = time.perf_counter() if debug else None
+        rerank_debug = {} if debug else None
+        ranked = self._rerank(resolved, fused, top=5, debug_info=rerank_debug)    # Layer 5
+        if debug:
+            dbg["stages_ms"]["rerank"] = (time.perf_counter() - t0) * 1000
+            dbg.update(rerank_debug)
+            ranked_texts = [c["text"] for c in ranked]
+            dbg["duplicate_chunk_texts_in_top5"] = len(ranked_texts) != len(set(ranked_texts))
 
         # Layer 6 — Confidence Gate
+        t0 = time.perf_counter() if debug else None
         best = ranked[0]["score"] if ranked else 0.0
-        if best < CONF_THRESHOLD:
+        gate_refuses = best < CONF_THRESHOLD
+        if debug:
+            dbg["stages_ms"]["gate"] = (time.perf_counter() - t0) * 1000
+            dbg["gate"] = {
+                "value_compared": best,
+                "threshold": CONF_THRESHOLD,
+                "comparison": f"best ({best}) < threshold ({CONF_THRESHOLD}) -> {gate_refuses}",
+                "refuses": gate_refuses,
+                "note": "value_compared (best) is the exact same number used to compute the returned confidence field",
+            }
+            dbg["confidence_inputs"] = {
+                "ranked_nonempty": bool(ranked),
+                "top_chunk_sigmoid_score": ranked[0]["score"] if ranked else None,
+                "fallback_value_if_ranked_empty": 0.0,
+                "best_value_used": best,
+                "formula": "confidence = round(best * 100)",
+            }
+
+        if gate_refuses:
             self.history.setdefault(owner_id, []).append({"q": question, "a": "(refused)"})
-            return {"refused": True,
+            result = {"refused": True,
                     "answer": "I don't know — your documents don't contain this.",
                     "citation": None, "confidence": round(best * 100),
                     "label": "Low", "sources": []}
+            if debug:
+                dbg["refusal_path"] = "refused=True: confidence gate branch (best < CONF_THRESHOLD)"
+                dbg["confidence_inputs"]["final_confidence"] = result["confidence"]
+                dbg["stages_ms"]["total"] = (time.perf_counter() - t_total) * 1000
+                result["debug"] = dbg
+            return result
 
         # Drop chunks that scored too low to be useful — improves context precision.
         MIN_CHUNK_SCORE = 0.25
         grounded = [c for c in ranked if c["score"] >= MIN_CHUNK_SCORE] or ranked[:1]
+        if debug:
+            dbg["counts"]["grounded_chunks"] = len(grounded)
+            grounded_texts = [c["text"] for c in grounded]
+            dbg["duplicate_chunk_texts_in_grounded"] = len(grounded_texts) != len(set(grounded_texts))
 
         # Generate + verify (Layer 7)
-        answer = self._generate(resolved, grounded)
-        verified = self._verify(answer, grounded)
+        t0 = time.perf_counter() if debug else None
+        answer = self._generate(resolved, grounded, calls_log=(dbg["llm_calls"] if debug else None))
+        if debug:
+            dbg["stages_ms"]["generate"] = (time.perf_counter() - t0) * 1000
+
+        t0 = time.perf_counter() if debug else None
+        verify_debug = {} if debug else None
+        verified = self._verify(answer, grounded, calls_log=(dbg["llm_calls"] if debug else None),
+                                 debug_out=verify_debug)
+        if debug:
+            dbg["stages_ms"]["verify"] = (time.perf_counter() - t0) * 1000
+            dbg["verification"] = {
+                "verdict_text": verify_debug.get("verdict_text"),
+                "verify_call_exception": verify_debug.get("exception"),
+                "result": verified,
+                "effect_on_answer": ("verified flag is returned alongside the answer; "
+                                     "the answer text itself is never edited, blocked, or regenerated based on this check"),
+            }
 
         top = grounded[0]
         confidence = round(best * 100)
         label = "High" if best >= 0.7 else "Medium" if best >= 0.5 else "Low"
 
         self.history.setdefault(owner_id, []).append({"q": question, "a": answer})
-        return {
+        result = {
             "refused": False,
             "answer": answer,
             "verified": verified,
@@ -414,6 +543,12 @@ class LexAIEngine:
                 for c in grounded
             ],
         }
+        if debug:
+            dbg["refusal_path"] = "refused=False: gate passed (best >= CONF_THRESHOLD)"
+            dbg["confidence_inputs"]["final_confidence"] = confidence
+            dbg["stages_ms"]["total"] = (time.perf_counter() - t_total) * 1000
+            result["debug"] = dbg
+        return result
 
     # ==================================================================
     # Library / admin helpers

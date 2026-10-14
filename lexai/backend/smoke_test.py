@@ -12,6 +12,7 @@ Usage:
 """
 
 import argparse
+import json
 import sys
 import time
 
@@ -70,9 +71,11 @@ def upload_pdf(base, pdf_path, owner_id):
     return result
 
 
-def run_query(base, question, owner_id):
+def run_query(base, question, owner_id, debug=False):
     print(f"\n--- POST /query : {question!r} ---")
     body = {"question": question, "owner_id": owner_id}
+    if debug:
+        body["debug"] = True
     start = time.perf_counter()
     try:
         resp = requests.post(f"{base}/query", json=body, timeout=180)
@@ -98,6 +101,10 @@ def run_query(base, question, owner_id):
     print(f"sources:    {len(sources)}")
     print(f"latency:    {latency:.2f}s")
 
+    if debug and result.get("debug") is not None:
+        print("debug:")
+        print(json.dumps(result["debug"], indent=2, default=str))
+
     result["_latency"] = latency
     return result
 
@@ -111,6 +118,8 @@ def main():
                          help="Question the PDF cannot answer (must be refused)")
     parser.add_argument("--base", default="http://127.0.0.1:8000", help="API base URL")
     parser.add_argument("--owner", default="smoke-test-user", help="owner_id to use")
+    parser.add_argument("--debug", action="store_true",
+                         help="send debug=true on /query and pretty-print the debug block")
     args = parser.parse_args()
 
     base = args.base.rstrip("/")
@@ -125,8 +134,8 @@ def main():
         print("\nSUMMARY: FAIL (upload failed)")
         sys.exit(1)
 
-    in_result = run_query(base, args.q_in, args.owner)
-    out_result = run_query(base, args.q_out, args.owner)
+    in_result = run_query(base, args.q_in, args.owner, debug=args.debug)
+    out_result = run_query(base, args.q_out, args.owner, debug=args.debug)
 
     if in_result is None:
         checks.append(("q-in request succeeded", False))
