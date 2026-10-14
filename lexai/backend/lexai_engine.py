@@ -28,7 +28,7 @@ import re
 import math
 from pathlib import Path
 
-import fitz  # PyMuPDF
+import pymupdf  # PyMuPDF
 import numpy as np
 import chromadb
 from rank_bm25 import BM25Okapi
@@ -95,7 +95,7 @@ class LexAIEngine:
         prov = _PROVIDERS.get(LLM_PROVIDER, _PROVIDERS["nvidia"])
         api_key = os.getenv(prov["key_env"], "")
         self.llm = OpenAI(base_url=prov["base_url"], api_key=api_key)
-        self.llm_model = prov["model"]
+        self.llm_model = os.getenv("LLM_MODEL") or prov["model"]
         if not api_key:
             print(f"WARNING: no API key found in {prov['key_env']} — generation will fail.")
 
@@ -114,7 +114,7 @@ class LexAIEngine:
     # ==================================================================
     def _extract_pdf(self, path):
         """Read a PDF in correct reading order, even for two-column layouts."""
-        doc = fitz.open(path)
+        doc = pymupdf.open(path)
         pages = []
         for pno, page in enumerate(doc, start=1):
             width = page.rect.width

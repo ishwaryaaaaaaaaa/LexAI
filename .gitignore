@@ -32,3 +32,8 @@ Thumbs.db
 .idea/
 .vscode/
 
+# ---- Added 2026-10-14 (repo audit: chroma_store.bak_* was tracked, *.bak scratch files untracked) ----
+chroma_store*/
+*.bak
+lexai/backend/scratch/
+
