@@ -31,6 +31,7 @@ from pathlib import Path
 
 import pymupdf  # PyMuPDF
 import numpy as np
+import torch
 import chromadb
 from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer, CrossEncoder
@@ -272,7 +273,11 @@ class LexAIEngine:
                 debug_info["reranker"] = {"top5_raw_logits": [], "top5_sigmoid_scores": [], "best_score": None}
             return []
         pairs = [[query, c["text"]] for c in candidates]
-        logits = self.reranker.predict(pairs)  # raw logits, NOT 0..1
+        # CrossEncoder.predict() applies nn.Sigmoid() by default for a num_labels=1
+        # model like bge-reranker-base, so request the raw logit explicitly here —
+        # otherwise _sigmoid() below double-sigmoids the score (confirmed 2026-10-14,
+        # see PROJECT_LOG.md: this previously confined every score to ~[0.5, 0.731]).
+        logits = self.reranker.predict(pairs, activation_fn=torch.nn.Identity())
         raw_by_id = {}
         for c, logit in zip(candidates, logits):
             raw = float(logit)
