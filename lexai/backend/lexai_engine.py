@@ -35,8 +35,9 @@ import torch
 import chromadb
 from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer, CrossEncoder
-from openai import OpenAI
 from dotenv import load_dotenv
+
+from llm_client import LLMClient
 
 # Load .env that sits next to this file (explicit path = no surprises)
 load_dotenv(Path(__file__).parent / ".env")
@@ -48,26 +49,14 @@ EMBED_MODEL    = os.getenv("EMBED_MODEL", "BAAI/bge-small-en-v1.5")
 RERANK_MODEL   = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-base")
 CHROMA_DIR     = os.getenv("CHROMA_PERSIST_DIR", "./chroma_store")
 CONF_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.30"))  # Layer 6 gate
-LLM_PROVIDER   = os.getenv("LLM_PROVIDER", "nvidia").lower()
 
 # Chunking parameters (Layer 2)
 CHUNK_WORDS   = 400
 OVERLAP_WORDS = 40
 
-# Provider -> (base_url, model, api_key) for the OpenAI-compatible client.
-# This is the "single config switch" from the doc: swap provider in .env.
-_PROVIDERS = {
-    "nvidia": {
-        "base_url": "https://integrate.api.nvidia.com/v1",
-        "model": "openai/gpt-oss-20b",
-        "key_env": "NVIDIA_API_KEY",
-    },
-    "groq": {
-        "base_url": "https://api.groq.com/openai/v1",
-        "model": "llama-3.1-8b-instant",
-        "key_env": "GROQ_API_KEY",
-    },
-}
+# Provider config (base_url/model/api-key-env for NVIDIA and Groq, the
+# LLM_PROVIDER/LLM_FALLBACK_PROVIDER switch, timeout + failover) now lives in
+# llm_client.py's LLMClient, which this file delegates to via self.llm_client.
 
 
 def _sigmoid(x: float) -> float:
@@ -93,13 +82,10 @@ class LexAIEngine:
         self.chroma = chromadb.PersistentClient(path=CHROMA_DIR)
         self.collection = self.chroma.get_or_create_collection("lexai")
 
-        # LLM client (generation + Layer 7). OpenAI SDK pointed at the provider.
-        prov = _PROVIDERS.get(LLM_PROVIDER, _PROVIDERS["nvidia"])
-        api_key = os.getenv(prov["key_env"], "")
-        self.llm = OpenAI(base_url=prov["base_url"], api_key=api_key)
-        self.llm_model = os.getenv("LLM_MODEL") or prov["model"]
-        if not api_key:
-            print(f"WARNING: no API key found in {prov['key_env']} — generation will fail.")
+        # LLM client (generation + Layer 7): per-call timeout + NVIDIA -> Groq
+        # failover, see llm_client.py. Logs its own "no API key" warning.
+        self.llm_client = LLMClient()
+        self.llm_model = self.llm_client.primary["model"] if self.llm_client.primary else None
 
         # In-memory state, rebuilt from Chroma so Chroma is the single source of truth.
         # self.chunks holds every owner's chunks; retrieval always filters by owner_id.
@@ -298,25 +284,10 @@ class LexAIEngine:
     # Generation
     # ==================================================================
     def _ask_llm(self, system, user, purpose=None, calls_log=None):
-        t0 = time.perf_counter() if calls_log is not None else None
-        resp = self.llm.chat.completions.create(
-            model=self.llm_model,
-            messages=[{"role": "system", "content": system},
-                      {"role": "user", "content": user}],
-            temperature=0,
-            max_tokens=2048,
-        )
-        content = (resp.choices[0].message.content or "").strip()
+        start_idx = len(self.llm_client.attempts)
+        content = self.llm_client.complete(system, user, purpose=purpose, max_tokens=2048)
         if calls_log is not None:
-            usage = getattr(resp, "usage", None)
-            calls_log.append({
-                "purpose": purpose,
-                "model": self.llm_model,
-                "duration_ms": (time.perf_counter() - t0) * 1000,
-                "prompt_tokens": getattr(usage, "prompt_tokens", None),
-                "completion_tokens": getattr(usage, "completion_tokens", None),
-                "finish_reason": resp.choices[0].finish_reason,
-            })
+            calls_log.extend(self.llm_client.attempts[start_idx:])
         return content
 
     def _generate(self, query, chunks, calls_log=None):

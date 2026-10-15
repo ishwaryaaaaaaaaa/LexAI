@@ -20,12 +20,13 @@ import tempfile
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
 from lexai_engine import LexAIEngine
+from llm_client import LLMUnavailableError
 
 load_dotenv(Path(__file__).parent / ".env")
 
@@ -74,7 +75,13 @@ async def upload(file: UploadFile = File(...), owner_id: str = Form(...)):
 
 @app.post("/query")
 def query(body: QueryIn):
-    return engine.query(body.question, body.owner_id, allowed_files=body.files, debug=body.debug)
+    try:
+        return engine.query(body.question, body.owner_id, allowed_files=body.files, debug=body.debug)
+    except LLMUnavailableError:
+        raise HTTPException(
+            status_code=503,
+            detail="The language model service is temporarily unavailable. Please try again.",
+        )
 
 
 @app.get("/papers")
