@@ -165,3 +165,9 @@
   color: #efeae0;
   border-color: #1a1a1a;
 }
+
+.lib-error {
+  color: #c62828;
+  font-size: 13px;
+  margin: 0 0 12px;
+}

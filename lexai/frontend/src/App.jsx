@@ -1,18 +1,18 @@
 import { useState, useEffect } from "react";
 import { supabase } from "./supabaseClient";
-import { recordFile, getFileIdsInCollection, listFiles } from "./libraryApi";
+import { recordFile, findFileByName, getFileIdsInCollection, listFiles } from "./libraryApi";
+import { apiFetch, onSessionExpired } from "./api";
 import SignIn from "./SignIn";
 import Onboarding from "./Onboarding";
 import Warning from "./Warning";
 import Library from "./Library";
 import "./App.css";
 
-const API = "http://localhost:8000";
-
 export default function App() {
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [authNotice, setAuthNotice] = useState(""); // shown on the sign-in screen after a 401
 
   // Chat state
   const [papers, setPapers] = useState([]);
@@ -27,6 +27,8 @@ export default function App() {
   const [scope, setScope] = useState({ type: "all" }); // all | file | collection
 
   useEffect(() => {
+    onSessionExpired(setAuthNotice);
+
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
       if (data.session) loadProfile(data.session.user.id);
@@ -35,14 +37,19 @@ export default function App() {
 
     const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
       setSession(newSession);
-      if (newSession) loadProfile(newSession.user.id);
-      else {
+      if (newSession) {
+        setAuthNotice("");
+        loadProfile(newSession.user.id);
+      } else {
         setProfile(null);
         setLoading(false);
       }
     });
 
-    return () => listener.subscription.unsubscribe();
+    return () => {
+      listener.subscription.unsubscribe();
+      onSessionExpired(null);
+    };
   }, []);
 
   async function loadProfile(userId) {
@@ -67,21 +74,32 @@ export default function App() {
     try {
       const form = new FormData();
       form.append("file", file);
-      form.append("owner_id", session.user.id);
-      const res = await fetch(`${API}/upload`, { method: "POST", body: form });
-      const data = await res.json();
-      setStatus(`Added "${data.file}" — ${data.chunks} chunks indexed. Now asking this file only.`);
+      const data = await apiFetch("/upload", { method: "POST", body: form });
+      // On a duplicate, data.file is the name the existing copy is stored under.
       setPapers((prev) => [...new Set([...prev, data.file])]);
       setScope({ type: "file", name: data.file });
 
+      if (data.duplicate) {
+        setStatus(`This file is already in your library as "${data.file}". Now asking this file only.`);
+        try {
+          // Keep the existing library entry; only add one if the library has none for it.
+          const existing = await findFileByName(session.user.id, data.file);
+          if (!existing) await recordFile(session.user.id, data.file, file.type, data.chunks);
+        } catch (libErr) {
+          console.error("Could not check the library for this file:", libErr);
+        }
+        return;
+      }
+
+      setStatus(`Added "${data.file}" — ${data.chunks} chunks indexed. Now asking this file only.`);
       try {
         await recordFile(session.user.id, data.file, file.type, data.chunks);
       } catch (libErr) {
         console.error("Could not save file record to library:", libErr);
         setStatus(`Added "${data.file}" — ${data.chunks} chunks indexed. Now asking this file only. (Not saved to library.)`);
       }
-    } catch {
-      setStatus("Upload failed. Is the backend running on port 8000?");
+    } catch (err) {
+      setStatus(`Upload failed. ${err.message || ""}`.trim());
     } finally {
       setUploading(false);
       e.target.value = "";
@@ -93,7 +111,7 @@ export default function App() {
     setAsking(true);
     setResult(null);
     try {
-      const body = { question, owner_id: session.user.id };
+      const body = { question };
       if (scope.type === "file") {
         body.files = [scope.name];
       } else if (scope.type === "collection") {
@@ -103,14 +121,15 @@ export default function App() {
           .filter((f) => fileIds.includes(f.id))
           .map((f) => f.filename);
       }
-      const res = await fetch(`${API}/query`, {
+      const data = await apiFetch("/query", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      setResult(await res.json());
-    } catch {
-      setResult({ refused: true, answer: "Request failed. Is the backend running?" });
+      setResult(data);
+    } catch (err) {
+      // 503 -> the backend's own message; 401 -> "Please sign in again" (and signed out).
+      setResult({ refused: true, answer: err.message || "Request failed." });
     } finally {
       setAsking(false);
     }
@@ -126,7 +145,7 @@ export default function App() {
 
   // ---- The gate ----
   if (loading) return <div className="app"><p>Loading...</p></div>;
-  if (!session) return <SignIn />;
+  if (!session) return <SignIn notice={authNotice} />;
 
   if (!profile) {
     return <Onboarding session={session} onComplete={() => loadProfile(session.user.id)} />;

@@ -1,7 +1,7 @@
 import { supabase } from "./supabaseClient";
 import "./SignIn.css";
 
-export default function SignIn() {
+export default function SignIn({ notice }) {
   async function handleGoogleSignIn() {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
@@ -25,6 +25,8 @@ export default function SignIn() {
         <p className="signin-sub">
           Answers from your own documents — cited, scored, and verified.
         </p>
+
+        {notice && <p className="signin-notice" role="alert">{notice}</p>}
 
         <button className="google-btn" onClick={handleGoogleSignIn}>
           <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">

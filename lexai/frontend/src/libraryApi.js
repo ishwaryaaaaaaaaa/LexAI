@@ -1,4 +1,5 @@
 import { supabase } from "./supabaseClient";
+import { apiFetch } from "./api";
 
 // ============================================================
 // All the Supabase calls for the Library, in one place.
@@ -33,9 +34,36 @@ export async function listFiles(userId) {
   return data;
 }
 
-export async function deleteFile(fileId) {
-  const { error } = await supabase.from("files").delete().eq("id", fileId);
+// Deletes a file from the backend index first, then from the library.
+// `file` is a row from listFiles(); its `filename` is the name the backend
+// returned on upload, which is the name its chunks are stored under.
+export async function deleteFile(file) {
+  try {
+    await apiFetch(`/papers/${encodeURIComponent(file.filename)}`, { method: "DELETE" });
+  } catch (err) {
+    // 404 = the backend has no chunks under that name (already gone): still remove the row.
+    // Anything else: keep the row and let the caller show the error.
+    if (err.status !== 404) throw err;
+  }
+  // The backend deletes by filename, so every library row for that filename is now stale.
+  const { error } = await supabase
+    .from("files")
+    .delete()
+    .eq("owner_id", file.owner_id)
+    .eq("filename", file.filename);
   if (error) throw error;
+}
+
+// Finds the user's existing library row for a filename (used for duplicate uploads).
+export async function findFileByName(userId, filename) {
+  const { data, error } = await supabase
+    .from("files")
+    .select("*")
+    .eq("owner_id", userId)
+    .eq("filename", filename)
+    .limit(1);
+  if (error) throw error;
+  return data[0] || null;
 }
 
 // ---- Collections ----

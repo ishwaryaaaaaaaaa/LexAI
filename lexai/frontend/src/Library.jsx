@@ -12,6 +12,7 @@ export default function Library({ session, onClose, onSelectScope }) {
   const [fileCollectionMap, setFileCollectionMap] = useState({}); // fileId -> [collectionIds]
   const [newCollectionName, setNewCollectionName] = useState("");
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     refresh();
@@ -51,9 +52,15 @@ export default function Library({ session, onClose, onSelectScope }) {
     refresh();
   }
 
-  async function handleDeleteFile(id) {
-    if (!confirm("Delete this file from your library?")) return;
-    await deleteFile(id);
+  async function handleDeleteFile(file) {
+    if (!confirm("Delete this file from your library and from LexAI's index?")) return;
+    setError("");
+    try {
+      await deleteFile(file);
+    } catch (err) {
+      // The library row is kept, so the library and the backend never silently disagree.
+      setError(`Could not delete "${file.filename}". ${err.message || ""}`.trim());
+    }
     refresh();
   }
 
@@ -72,6 +79,8 @@ export default function Library({ session, onClose, onSelectScope }) {
         <h1 className="library-title">Your Library</h1>
         <button className="library-close" onClick={onClose}>← Back to chat</button>
       </div>
+
+      {error && <p className="lib-error" role="alert">{error}</p>}
 
       {loading ? (
         <p>Loading your library...</p>
@@ -148,7 +157,7 @@ export default function Library({ session, onClose, onSelectScope }) {
                     >
                       Ask this file
                     </button>
-                    <button className="delete-btn" onClick={() => handleDeleteFile(f.id)}>✕</button>
+                    <button className="delete-btn" onClick={() => handleDeleteFile(f)}>✕</button>
                   </div>
                 </div>
                 <p className="file-meta">{f.chunk_count} chunks · {f.status}</p>

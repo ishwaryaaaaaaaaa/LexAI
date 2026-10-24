@@ -50,9 +50,16 @@ D:\LexAI/
         │   ├── Warning.jsx         Disclaimer screen ("text only", "no outside knowledge"); sets `accepted_warning`
         │   ├── Library.jsx         File + collection manager (list/delete files, create/delete collections,
         │   │                       assign files to collections, pick a query scope)
-        │   ├── libraryApi.js       All Supabase calls for Library (files, collections, file_collections tables)
+        │   ├── libraryApi.js       All Supabase calls for Library (files, collections, file_collections tables);
+        │   │                       deleteFile() also calls the backend DELETE first
+        │   ├── api.js              apiFetch(): every backend call (Bearer token, VITE_API_URL, 401/503 handling)
         │   ├── supabaseClient.js   One shared Supabase client (reads VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY)
         │   └── main.jsx            Entry point
+        ├── .env.example           VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY / VITE_API_URL placeholders
+        ├── supabase_schema.sql    files / collections / file_collections / profiles: tables, RLS, own-row
+        │                           policies, grants to authenticated, check queries; no auth.users trigger
+        │                           (Onboarding creates the profile). Not run against the real project by
+        │                           Claude Code; unverified whether the live tables match
         └── ...                    Vite + React 19, no router — App.jsx gates views by hand (session → profile →
                                      warning → chat/library)
 ```
@@ -97,14 +104,15 @@ Frontend (run from `lexai/frontend/`):
 
 ```bash
 npm install
-npm run dev       # Vite dev server, expects backend on http://localhost:8000
+npm run dev       # Vite dev server, calls the backend at VITE_API_URL (default http://localhost:8000)
 npm run build
 npm run lint
 ```
 
-Frontend also needs its own `.env` with `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` (read by
-`supabaseClient.js`); there's no committed `.env.example` for the frontend — unverified whether one
-exists outside this repo.
+Frontend also needs its own `.env` (template `lexai/frontend/.env.example`) with `VITE_SUPABASE_URL`,
+`VITE_SUPABASE_ANON_KEY` (read by `supabaseClient.js`) and `VITE_API_URL` (read by `api.js`; defaults to
+`http://localhost:8000`, local development only). `node_modules` is not installed in this checkout, so
+`npm run build` / `npm run lint` need `npm install` first.
 
 There is no formal Python test suite (no pytest); the two scratch scripts above are plain PASS/FAIL
 scripts. `ragas` in requirements.txt is for `Evaluvate.py`, which runs against the live backend.
@@ -237,9 +245,16 @@ project's Supabase uses is unverified.
 
 The frontend signs users in with Supabase (Google OAuth only, via `SignIn.jsx`); the profile, disclaimer
 flag and file/collection library live in Supabase tables (`profiles`, `files`, `collections`,
-`file_collections`), read and written directly from the frontend (`libraryApi.js`). **The frontend does
-not send the access token yet** — `App.jsx` still sends `session.user.id` as `owner_id` with no
-`Authorization` header, so with auth enabled the current frontend gets 401 on `/upload` and `/query`.
+`file_collections`), read and written directly from the frontend (`libraryApi.js`). Every backend call
+(`/upload`, `/query`, `DELETE /papers/{filename}`) goes through `apiFetch` in `lexai/frontend/src/api.js`,
+which calls `supabase.auth.getSession()` right before each request and sends
+`Authorization: Bearer <access_token>`. The frontend no longer sends `owner_id`, so it only works against a
+backend with auth enabled (with `AUTH_DISABLED=true` the backend answers 400). On a 401 `apiFetch` signs the
+user out and `SignIn` shows "Please sign in again" (no retry); on a 503 the backend's `detail` message is
+shown. Library delete (`libraryApi.deleteFile`) calls `DELETE /papers/{encodeURIComponent(filename)}`
+first; on success or 404 it deletes the user's Supabase `files` rows with that filename, on any other
+failure it keeps the row and `Library.jsx` shows an error. Not exercised against a live backend or real
+Supabase sign-in (unverified).
 The MCP server (`mcp_server/server.py`) likewise sends a fixed `LEXAI_OWNER_ID` and no token, so it only
 works against a backend with `AUTH_DISABLED=true`.
 
@@ -249,8 +264,9 @@ otherwise the chat view (upload + ask + answer/sources). Keep `App.jsx` and the 
 `LexAIEngine.query()` in sync if changing either — the UI renders `refused`, `answer`, `citation`,
 `confidence`, `label`, `verified` (shows "✓ verified" only when truthy), `sources[]` directly. On upload,
 `App.jsx` reads `data.file` and `data.chunks` and passes them to `libraryApi.recordFile()`, which inserts
-a new Supabase `files` row; it ignores `duplicate`, so a duplicate upload still adds a second Library row
-for the same file (frontend unchanged; backend chunks are not duplicated).
+a new Supabase `files` row. When the response has `duplicate: true` it shows "This file is already in your
+library as ...", scopes to the returned (existing) filename, and inserts a row only if
+`findFileByName()` finds none for that filename.
 
 Real backend env vars: `LLM_PROVIDER`, `NVIDIA_API_KEY`, `GROQ_API_KEY`, `LLM_MODEL`, `LLM_TIMEOUT_S`,
 `LLM_FALLBACK_PROVIDER`, `LLM_FALLBACK_MODEL`, `LLM_BREAKER_SECONDS`, `EMBED_MODEL`, `RERANK_MODEL`,
@@ -281,17 +297,16 @@ in README.md, as of 2026-10-24:
 
 ## Known issues
 
-- **Frontend does not send the access token** — with auth enabled the current frontend gets 401; local use
-  needs `AUTH_DISABLED=true` until `App.jsx` sends `Authorization: Bearer <session.access_token>`.
-- **Backend token verification untested against a real Supabase project** (offline tests only).
-- **Frontend Library delete removes only the Supabase row** — it should also call `DELETE /papers/{filename}`.
+- **Frontend needs a backend with auth enabled** — it no longer sends `owner_id`, so against
+  `AUTH_DISABLED=true` every upload/query/delete gets 400.
+- **Backend token verification and the frontend token flow are untested against a real Supabase project**
+  (offline tests only; the frontend changes were not built or linted — no `node_modules`).
 - **Per-owner chat history is never trimmed** (in memory until restart, fed into the condense call).
 - **`CONFIDENCE_THRESHOLD` = 0.30 is uncalibrated** against the current (single-sigmoid) reranker scores.
 - **Live NVIDIA stalls not fixed at the source** — the free endpoint's intermittent multi-minute stalls
   (PROJECT_LOG.md 2026-10-15) are contained by the timeout/failover/breaker, not resolved.
 - **First-query latency.** A 2026-10-13 smoke test's first query took ~106s (cold start) vs ~20s for the
   second. Unverified whether this still holds after the LLM client changes; no warm-up at startup exists.
-- **Duplicate uploads still create duplicate Library rows** in Supabase (frontend ignores `duplicate`).
 - **README is stale** — see the section above.
 - **`requirements.txt` lists unused packages** — `llama-index-*` and `supabase` are listed but not imported
   anywhere in `api.py`, `lexai_engine.py` or `llm_client.py`. Unverified whether intentional.

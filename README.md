@@ -262,7 +262,7 @@ On each upload the backend computes the SHA-256 of the file's bytes and stores i
 
 De-duplication is per owner and per exact bytes. A changed file with the same filename is ingested normally, alongside the older chunks (nothing is replaced or deleted). Chunks stored before this feature have no `file_hash` and are never matched.
 
-The React frontend currently ignores `duplicate` and still adds a second entry to the Supabase library for a duplicate upload.
+When the response has `duplicate: true`, the React frontend shows "This file is already in your library", uses the returned (existing) filename, and does not add a second Supabase library row (it adds one only if the library has no row for that filename).
 
 ---
 
@@ -314,7 +314,9 @@ The React frontend currently ignores `duplicate` and still adds a second entry t
 - If `SUPABASE_URL` is unset and `AUTH_DISABLED` is not `true`, the server refuses to start.
 - `AUTH_DISABLED=true` is for local development only: token checks are skipped, a warning is printed at startup, and the routes use the client's `owner_id` (form field on `/upload`, JSON body on `/query`, query string on `/papers` and `DELETE /papers/{filename}`; 400 if missing).
 
-This was tested offline with locally generated keys and a mocked JWKS endpoint. It has **not** been tested against a real Supabase project (unverified), and the React frontend does not send the token yet, so with auth enabled the current frontend gets 401 on upload and query.
+This was tested offline with locally generated keys and a mocked JWKS endpoint. It has **not** been tested against a real Supabase project (unverified).
+
+The React frontend sends `Authorization: Bearer <access token>` on every backend call (`/upload`, `/query`, `DELETE /papers/{filename}`) through one helper, `lexai/frontend/src/api.js`, which reads the current Supabase session right before each request. It no longer sends `owner_id`, so it needs a backend with auth enabled; against a backend with `AUTH_DISABLED=true` its requests get 400. On a 401 the frontend signs the user out and shows "Please sign in again"; on a 503 it shows the backend's message. The end-to-end flow with a real Supabase sign-in has not been run (unverified).
 
 CORS allows only the origins in `FRONTEND_ORIGIN` (default `http://localhost:5173`), the methods `GET, POST, DELETE, OPTIONS`, and the headers `Authorization, Content-Type, X-Admin-Key`.
 
@@ -380,6 +382,7 @@ LexAI/                          (repository root)
             ├── Warning.jsx         # Disclaimer screen
             ├── Library.jsx         # Files and collections manager
             ├── libraryApi.js       # Supabase calls for the library
+            ├── api.js              # All backend calls (token header, API URL, 401/503 handling)
             ├── supabaseClient.js   # Shared Supabase client
             ├── *.css               # Per-component styles + index.css
             └── assets/
@@ -408,7 +411,7 @@ cp .env.example .env
 # development only) or the server will not start. See .env.example for every variable.
 ```
 
-The frontend needs its own `lexai/frontend/.env` with `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`.
+The frontend needs its own `lexai/frontend/.env` (template: `lexai/frontend/.env.example`) with `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` and `VITE_API_URL` (backend base URL; defaults to `http://localhost:8000`, for local development only). The four Supabase tables the frontend uses (`files`, `collections`, `file_collections`, `profiles`) can be created with `lexai/frontend/supabase_schema.sql`: tables, row level security, own-rows policies limited to the operations the app performs, grants to `authenticated` only, and read-only check queries at the end. No trigger is needed (the app creates the profile row itself during onboarding). Tables that already exist are not altered by it; the check queries show their real columns and foreign keys. It has not been run against the real project (unverified).
 
 **3. Run the backend**
 ```bash
@@ -421,7 +424,8 @@ uvicorn api:app --host 127.0.0.1 --port 8000 --reload
 cd ../frontend
 npm install
 npm run dev
-# Vite dev server, usually http://localhost:5173; the app calls the backend at http://localhost:8000
+# Vite dev server, usually http://localhost:5173; the app calls the backend at VITE_API_URL
+# (default http://localhost:8000). The backend must run with auth enabled (SUPABASE_URL set).
 ```
 
 **5. Upload a document and query it**
@@ -550,14 +554,13 @@ Restart Claude Desktop. The backend must be running at `LEXAI_BACKEND_URL`.
 
 | Limitation | Status |
 |---|---|
-| React frontend does not send the Supabase access token | Open — with auth enabled the current frontend gets 401; until fixed, local use needs `AUTH_DISABLED=true` |
+| React frontend no longer sends `owner_id` | It does not work against a backend with `AUTH_DISABLED=true` (400); run the backend with `SUPABASE_URL` set |
+| Frontend token flow not yet tried with a real Supabase sign-in | Unverified live |
 | Backend token check not yet tried against a real Supabase project | Tested offline only (unverified live) |
 | MCP server sends a fixed `owner_id` and no token | Works only with `AUTH_DISABLED=true` |
-| Library "delete" in the frontend removes only the Supabase row, not the backend chunks | Open — should call `DELETE /papers/{filename}` |
 | Confidence threshold 0.30 is uncalibrated against current reranker scores | Open |
 | RAGAS scores are from a retired judge and predate the scoring fix | To be re-run |
 | Per-owner chat history is kept in memory, never trimmed, lost on restart | Open |
-| Frontend adds a duplicate library entry when the backend reports `duplicate: true` | Open |
 | NVIDIA free endpoint can stall for minutes | Contained by timeout / failover / breaker, not fixed |
 | First query after startup is slow (≈106s measured once on 2026-10-13, cold start) | Not re-measured since the LLM client changes |
 | Cannot read graphs, charts, or image-based figures | No vision model |

@@ -94,3 +94,9 @@
   padding-top: 16px;
 }
 
+.signin-notice {
+  font-size: 13px;
+  color: #c62828;
+  margin: -16px 0 20px;
+  line-height: 1.5;
+}
