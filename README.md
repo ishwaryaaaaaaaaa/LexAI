@@ -235,14 +235,14 @@ All LLM calls (condense, generate, verify, meta answers) go through `LLMClient` 
 
 | Setting (env var) | Default in code | Meaning |
 |---|---|---|
-| `LLM_PROVIDER` | `nvidia` | Primary provider (`nvidia` or `groq`) |
+| `LLM_PROVIDER` | `groq` | Primary provider (`groq` or `nvidia`) |
 | `LLM_MODEL` | provider default | Overrides the primary's model |
-| `LLM_FALLBACK_PROVIDER` | `groq` | Fallback provider; empty string disables failover |
+| `LLM_FALLBACK_PROVIDER` | `nvidia` | Fallback provider; empty string disables failover |
 | `LLM_FALLBACK_MODEL` | provider default | Overrides the fallback's model |
 | `LLM_TIMEOUT_S` | `30` | Per-call timeout in seconds; SDK retries are off |
 | `LLM_BREAKER_SECONDS` | `60` | How long calls skip the primary after it fails |
 
-Both providers default to the model `openai/gpt-oss-20b` (NVIDIA NIM at `integrate.api.nvidia.com`, Groq at `api.groq.com`). So with no env vars set, NVIDIA is primary and Groq is the fallback; setting `LLM_PROVIDER=groq` and `LLM_FALLBACK_PROVIDER=nvidia` reverses that. Which provider a given deployment uses depends on its `.env`. A live smoke test with Groq as primary passed on 2026-10-24 (per `PROJECT_LOG.md`).
+Both providers default to the model `openai/gpt-oss-20b` (NVIDIA NIM at `integrate.api.nvidia.com`, Groq at `api.groq.com`). So with no env vars set, Groq is primary and NVIDIA is the fallback; setting `LLM_PROVIDER=nvidia` and `LLM_FALLBACK_PROVIDER=groq` reverses that. Which provider a given deployment uses depends on its `.env`. A live smoke test with Groq as primary passed on 2026-10-24 (per `PROJECT_LOG.md`).
 
 Behaviour:
 - **Failover:** if the primary times out, cannot connect, returns 429, or returns another non-400 error (e.g. 5xx), the same call is tried once on the fallback. The fallback is only used if its API key (`NVIDIA_API_KEY` / `GROQ_API_KEY`) is set. A 400 is treated as a bug in the request and is raised without failover.

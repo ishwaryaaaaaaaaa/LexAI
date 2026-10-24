@@ -60,8 +60,8 @@ class LLMClient:
     """
 
     def __init__(self, primary_provider=None, timeout_s=None, breaker_seconds=None, clock=None):
-        self.primary_name = (primary_provider or os.getenv("LLM_PROVIDER", "nvidia")).lower()
-        self.fallback_name = os.getenv("LLM_FALLBACK_PROVIDER", "groq").lower().strip()
+        self.primary_name = (primary_provider or os.getenv("LLM_PROVIDER", "groq")).lower()
+        self.fallback_name = os.getenv("LLM_FALLBACK_PROVIDER", "nvidia").lower().strip()
         self.timeout_s = timeout_s if timeout_s is not None else float(os.getenv("LLM_TIMEOUT_S", "30"))
         self.breaker_seconds = (breaker_seconds if breaker_seconds is not None
                                 else float(os.getenv("LLM_BREAKER_SECONDS", "60")))

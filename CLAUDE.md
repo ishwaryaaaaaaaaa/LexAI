@@ -168,8 +168,8 @@ that `owner_id`), is lost on restart, is never trimmed, and is cleared by `/rese
 
 ### LLM client (`llm_client.py`)
 
-- **Primary** provider = `LLM_PROVIDER` (default `nvidia`), model overridable by `LLM_MODEL`.
-  **Fallback** provider = `LLM_FALLBACK_PROVIDER` (default `groq`; empty string disables it), model
+- **Primary** provider = `LLM_PROVIDER` (default `groq`), model overridable by `LLM_MODEL`.
+  **Fallback** provider = `LLM_FALLBACK_PROVIDER` (default `nvidia`; empty string disables it), model
   overridable by `LLM_FALLBACK_MODEL`. The fallback is only used if its API key env var
   (`NVIDIA_API_KEY` / `GROQ_API_KEY`) is non-empty. Provider table (`_PROVIDERS`) lives only in this file.
 - Each OpenAI-compatible client is built with `timeout=LLM_TIMEOUT_S` (default 30s, float) and

@@ -42,6 +42,9 @@ python-dotenv
 # ---- Evaluation (Layer 7 proof / Success Metrics) ----
 ragas                     # measured faithfulness score (run offline, not at request time)
 datasets                  # ragas dependency for eval sets
+langchain-openai==1.6.7   # Evaluvate.py: judge LLM client (ChatOpenAI); version already in .venv
+langchain-huggingface==1.2.3  # Evaluvate.py: local eval embeddings (HuggingFaceEmbeddings)
+requests==2.34.2          # Evaluvate.py: calls the live /query endpoint; version already in .venv
 
 # ============================================================
 # Reminder: this lists INTENT. Your working venv is the truth.
