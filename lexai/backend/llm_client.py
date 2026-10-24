@@ -2,7 +2,7 @@
 llm_client.py
 =============
 Resilient LLM calling: short per-call timeout, one automatic failover from
-the primary provider (NVIDIA) to a secondary provider (Groq by default),
+the primary provider (Groq by default) to a fallback provider (NVIDIA by default),
 a circuit breaker that routes calls straight to the fallback for
 LLM_BREAKER_SECONDS after the primary fails, and a clean
 LLMUnavailableError when both fail. No model loading here —
