@@ -8,7 +8,10 @@ what lexai_engine.LexAIEngine.query() / add_document() actually return.
 Usage:
   python smoke_test.py --pdf PATH --q-in "question the PDF answers" \\
       --q-out "question the PDF cannot answer" \\
-      [--base http://127.0.0.1:8000] [--owner smoke-test-user]
+      [--base http://127.0.0.1:8000] [--owner smoke-test-user] [--token ACCESS_TOKEN]
+
+--token sends "Authorization: Bearer <token>" on /upload and /query (needed when
+the API has auth enabled; the server then ignores --owner and uses the token's user).
 """
 
 import argparse
@@ -44,14 +47,19 @@ def check_health(base):
     return True
 
 
-def upload_pdf(base, pdf_path, owner_id):
+def auth_headers(token):
+    return {"Authorization": f"Bearer {token}"} if token else None
+
+
+def upload_pdf(base, pdf_path, owner_id, token=None):
     print("\n--- POST /upload ---")
     try:
         with open(pdf_path, "rb") as f:
             files = {"file": (pdf_path.split("/")[-1].split("\\")[-1], f, "application/pdf")}
             data = {"owner_id": owner_id}
             try:
-                resp = requests.post(f"{base}/upload", files=files, data=data, timeout=120)
+                resp = requests.post(f"{base}/upload", files=files, data=data, timeout=120,
+                                     headers=auth_headers(token))
             except requests.exceptions.ConnectionError as e:
                 fail(f"could not connect to {base}/upload ({e})")
                 return None
@@ -71,14 +79,14 @@ def upload_pdf(base, pdf_path, owner_id):
     return result
 
 
-def run_query(base, question, owner_id, debug=False):
+def run_query(base, question, owner_id, debug=False, token=None):
     print(f"\n--- POST /query : {question!r} ---")
     body = {"question": question, "owner_id": owner_id}
     if debug:
         body["debug"] = True
     start = time.perf_counter()
     try:
-        resp = requests.post(f"{base}/query", json=body, timeout=180)
+        resp = requests.post(f"{base}/query", json=body, timeout=180, headers=auth_headers(token))
     except requests.exceptions.ConnectionError as e:
         fail(f"could not connect to {base}/query ({e})")
         return None
@@ -120,6 +128,8 @@ def main():
     parser.add_argument("--owner", default="smoke-test-user", help="owner_id to use")
     parser.add_argument("--debug", action="store_true",
                          help="send debug=true on /query and pretty-print the debug block")
+    parser.add_argument("--token", default=None,
+                         help="Supabase access token; sent as 'Authorization: Bearer <token>'")
     args = parser.parse_args()
 
     base = args.base.rstrip("/")
@@ -129,13 +139,13 @@ def main():
         print("\nSUMMARY: FAIL (health check failed)")
         sys.exit(1)
 
-    upload_result = upload_pdf(base, args.pdf, args.owner)
+    upload_result = upload_pdf(base, args.pdf, args.owner, token=args.token)
     if upload_result is None:
         print("\nSUMMARY: FAIL (upload failed)")
         sys.exit(1)
 
-    in_result = run_query(base, args.q_in, args.owner, debug=args.debug)
-    out_result = run_query(base, args.q_out, args.owner, debug=args.debug)
+    in_result = run_query(base, args.q_in, args.owner, debug=args.debug, token=args.token)
+    out_result = run_query(base, args.q_out, args.owner, debug=args.debug, token=args.token)
 
     if in_result is None:
         checks.append(("q-in request succeeded", False))

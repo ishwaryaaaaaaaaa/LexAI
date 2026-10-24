@@ -35,12 +35,14 @@ rank-bm25
 
 # ---- Auth + Data ----
 supabase                  # Supabase Python client (profile, library metadata)
+PyJWT==2.15.1             # auth.py: verifies Supabase access tokens (PyJWKClient for JWKS); version already in .venv
+cryptography==50.0.2      # auth.py: RS256 / ES256 signature verification for PyJWT; version already in .venv
 
 # ---- Config / secrets ----
 python-dotenv
 
 # ---- Evaluation (Layer 7 proof / Success Metrics) ----
-ragas                     # measured faithfulness score (run offline, not at request time)
+ragas==0.4.3              # measured faithfulness score (run offline, not at request time)
 datasets                  # ragas dependency for eval sets
 langchain-community==0.3.31  # pinned: ragas 0.4.3 imports langchain_community.chat_models.vertexai, removed in 0.4.x
 langchain-openai==1.6.7   # Evaluvate.py: judge LLM client (ChatOpenAI); version already in .venv

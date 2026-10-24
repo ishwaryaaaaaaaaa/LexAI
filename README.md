@@ -123,7 +123,7 @@ flowchart TD
     style MISS2 fill:#c62a47,color:#fff
 ```
 
-**Implementation:** Both searches run independently with k=15. The BM25 index is held in memory and rebuilt from Chroma after every ingest and reset (Chroma is the source of truth). Both searches filter on `owner_id`, and optionally on a `files` list to narrow the search to specific documents. Note that `owner_id` is supplied by the client and is not verified by the backend — see [Known Limitations](#known-limitations).
+**Implementation:** Both searches run independently with k=15. The BM25 index is held in memory and rebuilt from Chroma after every ingest and reset (Chroma is the source of truth). Both searches filter on `owner_id`, and optionally on a `files` list to narrow the search to specific documents. The owner is taken from the verified Supabase access token — see [Authentication](#authentication).
 
 ---
 
@@ -295,13 +295,28 @@ The React frontend currently ignores `duplicate` and still adds a second entry t
 
 ## API Endpoints
 
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/health` | Liveness check — returns total paper count and chunk count (all owners) |
-| `POST` | `/upload` | Upload a `.pdf` or `.txt` — multipart: `file` + `owner_id`. See [Upload de-duplication](#upload-de-duplication) |
-| `POST` | `/query` | Ask a question — JSON: `question`, `owner_id`, optional `files` (list of filenames), optional `debug`. 503 if no LLM provider is reachable |
-| `GET` | `/papers` | List uploaded documents for an owner — query param: `owner_id` |
-| `POST` | `/reset` | Deletes **all documents of every owner** and all chat history. Takes no arguments and has no authentication |
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| `GET` | `/health` | none | Liveness check — returns total paper count and chunk count (all owners) |
+| `POST` | `/upload` | token | Upload a `.pdf` or `.txt` — multipart: `file`. See [Upload de-duplication](#upload-de-duplication) |
+| `POST` | `/query` | token | Ask a question — JSON: `question`, optional `files` (list of filenames), optional `debug`. 503 if no LLM provider is reachable |
+| `GET` | `/papers` | token | List the caller's documents |
+| `DELETE` | `/papers/{filename}` | token | Delete the caller's chunks for that filename (URL-encoded). Returns `{"file": ..., "deleted_chunks": n}`; 404 if the caller has no such file. Other users' files with the same name are not touched |
+| `POST` | `/reset` | `X-Admin-Key` | Deletes **all documents of every owner** and all chat history. Requires header `X-Admin-Key` equal to env `ADMIN_KEY`; disabled (403) when `ADMIN_KEY` is empty; wrong key → 403 |
+
+### Authentication
+
+"token" routes require `Authorization: Bearer <Supabase access token>` (`lexai/backend/auth.py`):
+
+- RS256 / ES256 tokens are verified against the project's public keys at `{SUPABASE_URL}/auth/v1/.well-known/jwks.json` (fetched with PyJWT's `PyJWKClient` and cached in memory). HS256 tokens (legacy shared-secret projects) are verified with `SUPABASE_JWT_SECRET`; if it is unset they are rejected. Any other algorithm, including `none`, is rejected.
+- `exp`, `iss` (`{SUPABASE_URL}/auth/v1`), `aud` (`authenticated`) and `sub` are always required. The owner of the request is the token's `sub`; an `owner_id` sent by the client is ignored.
+- Every failure returns 401 `Invalid or missing credentials.`
+- If `SUPABASE_URL` is unset and `AUTH_DISABLED` is not `true`, the server refuses to start.
+- `AUTH_DISABLED=true` is for local development only: token checks are skipped, a warning is printed at startup, and the routes use the client's `owner_id` (form field on `/upload`, JSON body on `/query`, query string on `/papers` and `DELETE /papers/{filename}`; 400 if missing).
+
+This was tested offline with locally generated keys and a mocked JWKS endpoint. It has **not** been tested against a real Supabase project (unverified), and the React frontend does not send the token yet, so with auth enabled the current frontend gets 401 on upload and query.
+
+CORS allows only the origins in `FRONTEND_ORIGIN` (default `http://localhost:5173`), the methods `GET, POST, DELETE, OPTIONS`, and the headers `Authorization, Content-Type, X-Admin-Key`.
 
 **Lookup-path response shape:**
 ```json
@@ -336,6 +351,7 @@ LexAI/                          (repository root)
     │   ├── api.py              # FastAPI server — all endpoints
     │   ├── lexai_engine.py     # Retrieval / gate / generation / verify pipeline (LexAIEngine)
     │   ├── llm_client.py       # LLM calls: timeout, failover, circuit breaker
+    │   ├── auth.py             # Supabase access-token verification (FastAPI dependency)
     │   ├── Evaluvate.py        # RAGAS evaluation script (filename spelled this way)
     │   ├── smoke_test.py       # Upload + answerable/unanswerable query check against a running backend
     │   ├── ragas_results.csv   # Per-question output of the last Evaluvate.py run (old judge)
@@ -388,7 +404,8 @@ pip install langchain-openai langchain-huggingface  # only needed for Evaluvate.
 ```bash
 cp .env.example .env
 # Edit .env: set NVIDIA_API_KEY and/or GROQ_API_KEY, and choose LLM_PROVIDER /
-# LLM_FALLBACK_PROVIDER. See .env.example for every variable.
+# LLM_FALLBACK_PROVIDER. Set SUPABASE_URL (or AUTH_DISABLED=true for local
+# development only) or the server will not start. See .env.example for every variable.
 ```
 
 The frontend needs its own `lexai/frontend/.env` with `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`.
@@ -409,16 +426,19 @@ npm run dev
 
 **5. Upload a document and query it**
 ```bash
-# Upload
+# Upload (auth enabled: pass a Supabase access token)
 curl -X POST http://localhost:8000/upload \
-  -F "file=@your_document.pdf" \
-  -F "owner_id=your-user-id"
+  -H "Authorization: Bearer $TOKEN" \
+  -F "file=@your_document.pdf"
 
 # Query
 curl -X POST http://localhost:8000/query \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"question": "What is the main finding?", "owner_id": "your-user-id"}'
+  -d '{"question": "What is the main finding?"}'
 ```
+
+With `AUTH_DISABLED=true` (local development only), drop the `Authorization` header and send `owner_id` instead (`-F "owner_id=your-user-id"` on upload, `"owner_id": "your-user-id"` in the query body). `smoke_test.py --token <access token>` sends the header for you.
 
 ---
 
@@ -452,7 +472,7 @@ python Evaluvate.py   # makes real LLM calls (backend provider + NVIDIA judge); 
 | `temperature=0` | temperature > 0 | More repeatable output |
 | No LlamaIndex | LlamaIndex orchestration | Direct control of each step; `llama-index-*` remains in requirements.txt but is not imported |
 | React + Vite frontend | Streamlit | Multi-user UI with a per-user library |
-| Owner-scoped retrieval | Shared document pool | Every retrieval filters on `owner_id` (the backend does not verify it) |
+| Owner-scoped retrieval | Shared document pool | Every retrieval filters on `owner_id`, which comes from the verified token |
 | PyMuPDF | pdfminer | Column-aware block reading |
 | Strip references section | Keep all text | Reference lists add frequent terms that distort retrieval |
 | Hosted LLM (NVIDIA NIM / Groq) with failover | Local Ollama | No local GPU needed; a second provider covers outages |
@@ -500,7 +520,7 @@ Add this to `%APPDATA%\Claude\claude_desktop_config.json` (Windows) or `~/Librar
 
 Restart Claude Desktop. The backend must be running at `LEXAI_BACKEND_URL`.
 
-> **Single-user mode:** the server uses one fixed `LEXAI_OWNER_ID` for every call. Multi-user use would need `owner_id` per call plus real authentication.
+> **Single-user mode:** the server uses one fixed `LEXAI_OWNER_ID` for every call and sends no access token, so it only works against a backend running with `AUTH_DISABLED=true`. Multi-user use would need a per-user token.
 
 ---
 
@@ -530,8 +550,10 @@ Restart Claude Desktop. The backend must be running at `LEXAI_BACKEND_URL`.
 
 | Limitation | Status |
 |---|---|
-| Backend trusts the client-supplied `owner_id`; no Supabase JWT verification | Open — anyone who can reach the API can read or write any owner's documents |
-| `/reset` deletes every owner's data and has no authentication | Open |
+| React frontend does not send the Supabase access token | Open — with auth enabled the current frontend gets 401; until fixed, local use needs `AUTH_DISABLED=true` |
+| Backend token check not yet tried against a real Supabase project | Tested offline only (unverified live) |
+| MCP server sends a fixed `owner_id` and no token | Works only with `AUTH_DISABLED=true` |
+| Library "delete" in the frontend removes only the Supabase row, not the backend chunks | Open — should call `DELETE /papers/{filename}` |
 | Confidence threshold 0.30 is uncalibrated against current reranker scores | Open |
 | RAGAS scores are from a retired judge and predate the scoring fix | To be re-run |
 | Per-owner chat history is kept in memory, never trimmed, lost on restart | Open |

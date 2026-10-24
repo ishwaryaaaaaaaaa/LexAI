@@ -27,6 +27,7 @@ import os
 import re
 import math
 import hashlib
+import uuid
 import time
 from pathlib import Path
 
@@ -198,8 +199,8 @@ class LexAIEngine:
         # Embed and store in Chroma
         texts = [c["text"] for c in new_chunks]
         embeddings = self.embedder.encode(texts, normalize_embeddings=True).tolist()
-        base = self.collection.count()
-        ids = [f"{filename}_{base + i}" for i in range(len(new_chunks))]
+        # Random ids: a count-based suffix could repeat an existing id after deletions.
+        ids = [f"{filename}_{uuid.uuid4().hex}" for _ in new_chunks]
         metadatas = [{"file": c["file"], "page": c["page"], "owner_id": c["owner_id"],
                       "file_hash": file_hash}
                      for c in new_chunks]
@@ -561,6 +562,16 @@ class LexAIEngine:
     # ==================================================================
     def list_papers(self, owner_id):
         return sorted({c["file"] for c in self.chunks if c["owner_id"] == owner_id})
+
+    def delete_document(self, owner_id, filename):
+        """Delete one owner's chunks for one filename; returns how many were deleted.
+        Other owners' files with the same name are untouched. Chat history is left alone."""
+        where = {"$and": [{"owner_id": owner_id}, {"file": filename}]}
+        n = len(self.collection.get(where=where, include=["metadatas"])["ids"])
+        if n:
+            self.collection.delete(where=where)
+            self._rebuild_from_store()
+        return n
 
     def reset(self, owner_id=None):
         """Wipe everything (owner_id=None) or just one owner's documents + history."""

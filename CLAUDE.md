@@ -18,7 +18,9 @@ D:\LexAI/
 │                           but not part of either app; nothing at root requires it.
 └── lexai/
     ├── backend/
-    │   ├── api.py              FastAPI server — the real entry point (/health, /upload, /query, /papers, /reset)
+    │   ├── api.py              FastAPI server — the real entry point (/health, /upload, /query, /papers,
+    │   │                         DELETE /papers/{filename}, /reset)
+    │   ├── auth.py              Supabase access-token verification (FastAPI dependency get_user_id)
     │   ├── lexai_engine.py      The entire RAG pipeline as one class (LexAIEngine). Saved as UTF-8 with BOM.
     │   ├── llm_client.py        LLMClient: per-call timeout, primary -> fallback failover, circuit breaker,
     │   │                         LLMUnavailableError. No model loading, so importable/testable offline.
@@ -80,6 +82,8 @@ Offline tests (no server, no network, no real LLM calls; run from `lexai/backend
 .\.venv\Scripts\python.exe scratch\p6_engine_test.py      # verify fix + upload dedupe; loads the cached
                                                           # embedder/reranker on CPU, uses a temp Chroma dir
                                                           # under scratch/ and deletes it afterwards
+.\.venv\Scripts\python.exe scratch\p7_auth_test.py        # auth, /reset lock, CORS, DELETE, chunk ids
+                                                          # (local keys, mocked JWKS, temp Chroma dir)
 ```
 
 RAGAS evaluation (needs the backend already running, at least one doc uploaded, test set edited in
@@ -125,8 +129,8 @@ package is in the same situation: listed in requirements.txt, never imported by 
    (alongside the old chunks — nothing is replaced), and chunks stored before `file_hash` existed have no
    such metadata and are never matched. Existing data was not migrated.
 2. **Chunking** (`_chunk_page`) — sentence-based, ~400 words per chunk with ~40-word overlap (constants
-   `CHUNK_WORDS` / `OVERLAP_WORDS`). Chunk metadata is `{file, page, owner_id, file_hash}`; chunk ids are
-   `f"{filename}_{collection.count() + i}"`.
+   `CHUNK_WORDS` / `OVERLAP_WORDS`). Chunk metadata is `{file, page, owner_id, file_hash}`; new chunk ids are
+   `f"{filename}_{uuid.uuid4().hex}"` (chunks stored earlier keep their old count-based ids).
 3. **Hybrid retrieval** (`_semantic_search` + `_keyword_search`) — ChromaDB vector search (`bge-small-en-v1.5`
    via `sentence-transformers`) run alongside an in-memory BM25 index (`rank_bm25`), rebuilt from Chroma on
    every ingest/reset via `_rebuild_from_store` (Chroma is the single source of truth — `self.chunks` and
@@ -204,21 +208,40 @@ response has no `debug` key.
 
 ### API routes (`api.py`)
 
-`GET /health`, `POST /upload` (multipart `file` + `owner_id`; returns `add_document`'s dict — see
-dedupe above), `POST /query` (`question`, `owner_id`, optional `files`, optional `debug`; 503 on
-`LLMUnavailableError`), `GET /papers?owner_id=...`, and `POST /reset`. **`/reset` takes no arguments and
-calls `engine.reset()` with no `owner_id`, which deletes the whole Chroma collection for every owner and
-clears all chat history.** The engine's `reset(owner_id)` per-owner mode exists but no route exposes it.
+- `GET /health` — no auth.
+- `POST /upload` (multipart `file`), `POST /query` (`question`, optional `files`, optional `debug`; 503 on
+  `LLMUnavailableError`), `GET /papers`, and `DELETE /papers/{filename}` (path param, URL-encoded,
+  `{filename:path}` so slashes survive) all depend on `auth.get_user_id`. With auth enabled the owner is
+  **always** the verified token's `sub`; any client-supplied `owner_id` is ignored. With
+  `AUTH_DISABLED=true` they use the client's `owner_id` (form field / JSON body / query string; 400 if
+  missing) — `api.resolve_owner()`. Response shapes are unchanged.
+- `DELETE /papers/{filename}` calls `engine.delete_document(owner, filename)` (Chroma delete with a
+  `where` on `owner_id` + `file`, then `_rebuild_from_store`; chat history untouched) and returns
+  `{"file", "deleted_chunks"}`, or 404 if the caller has no chunks for that name.
+- `POST /reset` never uses `get_user_id`: it requires header `X-Admin-Key` equal to env `ADMIN_KEY`
+  (`hmac.compare_digest`); empty/unset `ADMIN_KEY` → 403 (disabled), wrong/missing key → 403. When allowed
+  it still calls `engine.reset()` with no `owner_id`, wiping every owner's chunks and all chat history.
+- CORS: origins from `FRONTEND_ORIGIN` (comma-separated, default `http://localhost:5173`), methods
+  `GET, POST, DELETE, OPTIONS`, headers `Authorization, Content-Type, X-Admin-Key`.
 
-**Auth / owner_id:** the frontend signs users in with Supabase (Google OAuth only, via `SignIn.jsx`), and
-everything about that identity — the profile, the disclaimer-acceptance flag, the file/collection
-library — lives in Supabase tables (`profiles`, `files`, `collections`, `file_collections`), read and
-written directly from the frontend (`libraryApi.js`), never through the backend. `App.jsx` then sends
-`session.user.id` as a plain `owner_id` field on `/upload` and `/query` requests. **`api.py` does not
-verify a JWT or any other credential** — it trusts whatever `owner_id` string the client sends, verbatim
-(see the `TODO` comment above the `/upload` handler). Anyone who can call the API directly can read or
-write any owner's documents by supplying their `owner_id`, and anyone can wipe everything via `/reset`.
-This is also why the MCP server (`mcp_server/server.py`) can get away with one fixed `LEXAI_OWNER_ID`.
+**Auth (`auth.py`):** `get_user_id` reads `Authorization: Bearer <token>`. RS256/ES256 tokens are verified
+with a module-level PyJWT `PyJWKClient` on `{SUPABASE_URL}/auth/v1/.well-known/jwks.json` (key set cached
+300s, signing keys LRU-cached); HS256 with `SUPABASE_JWT_SECRET` (unset → rejected); any other alg,
+including `none`, is rejected. `exp`, `iss` (`{SUPABASE_URL}/auth/v1`), `aud` (`authenticated`) and `sub`
+are required. Every failure is 401 "Invalid or missing credentials." with no token details.
+`auth.check_startup_config()` runs at `api.py` import: if `SUPABASE_URL` is empty and `AUTH_DISABLED` is not
+`true` it raises `AuthConfigError` (server refuses to start); with `AUTH_DISABLED=true` it prints
+"AUTH DISABLED - local development only". Tested offline only (`scratch/p7_auth_test.py`, local keys and a
+mocked JWKS fetch) — **unverified against a real Supabase project**, and which signing method this
+project's Supabase uses is unverified.
+
+The frontend signs users in with Supabase (Google OAuth only, via `SignIn.jsx`); the profile, disclaimer
+flag and file/collection library live in Supabase tables (`profiles`, `files`, `collections`,
+`file_collections`), read and written directly from the frontend (`libraryApi.js`). **The frontend does
+not send the access token yet** — `App.jsx` still sends `session.user.id` as `owner_id` with no
+`Authorization` header, so with auth enabled the current frontend gets 401 on `/upload` and `/query`.
+The MCP server (`mcp_server/server.py`) likewise sends a fixed `LEXAI_OWNER_ID` and no token, so it only
+works against a backend with `AUTH_DISABLED=true`.
 
 The frontend's view stack, gated by `App.jsx` with no router: `loading` → `!session` → `SignIn` →
 `!profile` → `Onboarding` → `!profile.accepted_warning` → `Warning` → `view === "library"` → `Library` →
@@ -230,8 +253,9 @@ a new Supabase `files` row; it ignores `duplicate`, so a duplicate upload still 
 for the same file (frontend unchanged; backend chunks are not duplicated).
 
 Real backend env vars: `LLM_PROVIDER`, `NVIDIA_API_KEY`, `GROQ_API_KEY`, `LLM_MODEL`, `LLM_TIMEOUT_S`,
-`LLM_FALLBACK_PROVIDER`, `LLM_FALLBACK_MODEL`, `LLM_BREAKER_SECONDS` (not yet in `.env.example`),
-`EMBED_MODEL`, `RERANK_MODEL`, `CHROMA_PERSIST_DIR`, `CONFIDENCE_THRESHOLD`, `FRONTEND_ORIGIN`. Frontend
+`LLM_FALLBACK_PROVIDER`, `LLM_FALLBACK_MODEL`, `LLM_BREAKER_SECONDS`, `EMBED_MODEL`, `RERANK_MODEL`,
+`CHROMA_PERSIST_DIR`, `CONFIDENCE_THRESHOLD`, `FRONTEND_ORIGIN`, `SUPABASE_URL`, `SUPABASE_JWT_SECRET`
+(legacy HS256 projects only), `AUTH_DISABLED` (default false), `ADMIN_KEY` (empty disables `/reset`). Frontend
 needs `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` in its own `.env`. `mcp_server/` has its own
 separate `.env` / `.env.example` with `LEXAI_BACKEND_URL` and `LEXAI_OWNER_ID`.
 
@@ -257,18 +281,17 @@ in README.md, as of 2026-10-24:
 
 ## Known issues
 
-- **No backend JWT verification** — see "Auth / owner_id" above. Anyone with API access and a guessed/
-  known `owner_id` can read or write that owner's documents; `/reset` wipes all owners with no check.
+- **Frontend does not send the access token** — with auth enabled the current frontend gets 401; local use
+  needs `AUTH_DISABLED=true` until `App.jsx` sends `Authorization: Bearer <session.access_token>`.
+- **Backend token verification untested against a real Supabase project** (offline tests only).
+- **Frontend Library delete removes only the Supabase row** — it should also call `DELETE /papers/{filename}`.
+- **Per-owner chat history is never trimmed** (in memory until restart, fed into the condense call).
 - **`CONFIDENCE_THRESHOLD` = 0.30 is uncalibrated** against the current (single-sigmoid) reranker scores.
 - **Live NVIDIA stalls not fixed at the source** — the free endpoint's intermittent multi-minute stalls
   (PROJECT_LOG.md 2026-10-15) are contained by the timeout/failover/breaker, not resolved.
 - **First-query latency.** A 2026-10-13 smoke test's first query took ~106s (cold start) vs ~20s for the
   second. Unverified whether this still holds after the LLM client changes; no warm-up at startup exists.
 - **Duplicate uploads still create duplicate Library rows** in Supabase (frontend ignores `duplicate`).
-- **Chunk-id scheme can collide** (unverified in practice): ids are `filename_{collection.count()+i}`, so
-  after chunks are deleted (e.g. engine-level per-owner `reset`) the count drops and a later upload of the
-  same filename could reuse an existing id. Not exercised by any route today except via full `/reset`,
-  which empties the collection.
 - **README is stale** — see the section above.
 - **`requirements.txt` lists unused packages** — `llama-index-*` and `supabase` are listed but not imported
   anywhere in `api.py`, `lexai_engine.py` or `llm_client.py`. Unverified whether intentional.
