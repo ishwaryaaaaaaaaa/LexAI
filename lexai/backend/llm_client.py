@@ -3,13 +3,16 @@ llm_client.py
 =============
 Resilient LLM calling: short per-call timeout, one automatic failover from
 the primary provider (NVIDIA) to a secondary provider (Groq by default),
-and a clean LLMUnavailableError when both fail. No model loading here —
+a circuit breaker that routes calls straight to the fallback for
+LLM_BREAKER_SECONDS after the primary fails, and a clean
+LLMUnavailableError when both fail. No model loading here —
 this module only builds OpenAI-compatible HTTP clients, so it is fully
 testable with fakes/monkeypatching and no network access.
 """
 
 import logging
 import os
+import threading
 import time
 
 import openai
@@ -56,10 +59,21 @@ class LLMClient:
     providers and runs chat completions through them with failover.
     """
 
-    def __init__(self, primary_provider=None, timeout_s=None):
+    def __init__(self, primary_provider=None, timeout_s=None, breaker_seconds=None, clock=None):
         self.primary_name = (primary_provider or os.getenv("LLM_PROVIDER", "nvidia")).lower()
         self.fallback_name = os.getenv("LLM_FALLBACK_PROVIDER", "groq").lower().strip()
         self.timeout_s = timeout_s if timeout_s is not None else float(os.getenv("LLM_TIMEOUT_S", "30"))
+        self.breaker_seconds = (breaker_seconds if breaker_seconds is not None
+                                else float(os.getenv("LLM_BREAKER_SECONDS", "60")))
+
+        # Circuit breaker state, shared across uvicorn's worker threads.
+        # _open_until is None when closed; otherwise the clock() time until which
+        # calls skip the primary. After it passes, exactly one call (the probe)
+        # tries the primary again while the others keep using the fallback.
+        self._clock = clock or time.monotonic
+        self._breaker_lock = threading.Lock()
+        self._open_until = None
+        self._probe_in_flight = False
 
         self.primary = self._build_provider(self.primary_name)
         if self.primary is not None:
@@ -140,12 +154,61 @@ class LLMClient:
                      finish_reason=resp.choices[0].finish_reason)
         return content
 
+    # ------------------------------------------------------------------
+    # Circuit breaker
+    # ------------------------------------------------------------------
+    def _breaker_route(self):
+        """Decide how this call reaches the primary: "primary" (breaker closed),
+        "probe" (window expired; this call is the single trial of the primary),
+        or "skip" (window still open, or another call is already probing)."""
+        with self._breaker_lock:
+            if self.fallback is None or self._open_until is None:
+                return "primary"
+            if self._probe_in_flight or self._clock() < self._open_until:
+                return "skip"
+            self._probe_in_flight = True
+            return "probe"
+
+    def _breaker_open(self):
+        # Only worth opening when there is somewhere else to send calls.
+        if self.fallback is None:
+            return
+        with self._breaker_lock:
+            self._open_until = self._clock() + self.breaker_seconds
+        logger.warning("LLM circuit breaker opened for %.1fs: sending calls to fallback provider %r",
+                       self.breaker_seconds, self.fallback_name)
+
+    def _breaker_close(self):
+        with self._breaker_lock:
+            was_open = self._open_until is not None
+            self._open_until = None
+        if was_open:
+            logger.warning("LLM circuit breaker closed: primary provider %r recovered", self.primary_name)
+
+    def _call_fallback(self, system, user, max_tokens, purpose):
+        try:
+            return self._call_one(self.fallback, system, user, max_tokens, purpose, attempt=2)
+        except Exception as fallback_exc:
+            logger.warning(
+                "LLM fallback provider %r also failed for purpose=%r (%s)",
+                self.fallback_name, purpose, type(fallback_exc).__name__,
+            )
+            raise LLMUnavailableError(
+                "The language model service is temporarily unavailable."
+            ) from fallback_exc
+
     def complete(self, system, user, purpose=None, max_tokens=2048):
         if self.primary is None or self.primary["client"] is None:
             raise LLMUnavailableError("The language model service is temporarily unavailable.")
 
+        route = self._breaker_route()
+        if route == "skip":
+            self._record(self.primary_name, self.primary["model"], purpose, 1,
+                         "skipped:breaker_open", 0.0)
+            return self._call_fallback(system, user, max_tokens, purpose)
+
         try:
-            return self._call_one(self.primary, system, user, max_tokens, purpose, attempt=1)
+            content = self._call_one(self.primary, system, user, max_tokens, purpose, attempt=1)
         except openai.BadRequestError:
             raise  # a bug in our own request — never mask it with a failover
         except _FAILOVER_EXCEPTIONS as primary_exc:
@@ -157,13 +220,12 @@ class LLMClient:
                 raise LLMUnavailableError(
                     "The language model service is temporarily unavailable."
                 ) from primary_exc
-            try:
-                return self._call_one(self.fallback, system, user, max_tokens, purpose, attempt=2)
-            except Exception as fallback_exc:
-                logger.warning(
-                    "LLM fallback provider %r also failed for purpose=%r (%s)",
-                    self.fallback_name, purpose, type(fallback_exc).__name__,
-                )
-                raise LLMUnavailableError(
-                    "The language model service is temporarily unavailable."
-                ) from fallback_exc
+            self._breaker_open()  # a failed probe reopens the window too
+            return self._call_fallback(system, user, max_tokens, purpose)
+        else:
+            self._breaker_close()
+            return content
+        finally:
+            if route == "probe":
+                with self._breaker_lock:
+                    self._probe_in_flight = False

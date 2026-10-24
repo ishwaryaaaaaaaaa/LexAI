@@ -26,6 +26,7 @@ This file has NO web server. It's just a class the API calls.
 import os
 import re
 import math
+import hashlib
 import time
 from pathlib import Path
 
@@ -163,6 +164,22 @@ class LexAIEngine:
     # ==================================================================
     def add_document(self, path, filename, owner_id):
         ext = Path(filename).suffix.lower()
+        if ext not in (".pdf", ".txt"):
+            raise ValueError("Only .pdf and .txt are supported.")
+
+        # De-duplicate on the exact file bytes, per owner. Chunks stored before
+        # file_hash existed have no such metadata and are simply never matched.
+        file_hash = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        existing = self.collection.get(
+            where={"$and": [{"owner_id": owner_id}, {"file_hash": file_hash}]},
+            include=["metadatas"],
+        )
+        if existing["ids"]:
+            # Report the name the content is already stored under, so a client
+            # scoping queries to the returned filename finds those chunks.
+            stored_name = existing["metadatas"][0].get("file", filename)
+            return {"file": stored_name, "chunks": len(existing["ids"]), "duplicate": True}
+
         if ext == ".pdf":
             pages = self._extract_pdf(path)
         elif ext == ".txt":
@@ -183,7 +200,8 @@ class LexAIEngine:
         embeddings = self.embedder.encode(texts, normalize_embeddings=True).tolist()
         base = self.collection.count()
         ids = [f"{filename}_{base + i}" for i in range(len(new_chunks))]
-        metadatas = [{"file": c["file"], "page": c["page"], "owner_id": c["owner_id"]}
+        metadatas = [{"file": c["file"], "page": c["page"], "owner_id": c["owner_id"],
+                      "file_hash": file_hash}
                      for c in new_chunks]
 
         self.collection.add(ids=ids, embeddings=embeddings, documents=texts, metadatas=metadatas)
@@ -317,19 +335,26 @@ class LexAIEngine:
         user = f"Sources:\n{context}\n\nAnswer:\n{answer}\n\nIs every claim supported? YES or NO:"
         try:
             raw = self._ask_llm(system, user, purpose="verify", calls_log=calls_log)
-            verdict = raw.upper()
-            result = verdict.startswith("YES")
-            if debug_out is not None:
-                debug_out["verdict_text"] = raw
-                debug_out["result"] = result
-                debug_out["exception"] = None
-            return result
         except Exception as e:
+            # The check never ran, so never claim it passed. The answer itself is
+            # still returned (not blocked), just with verified=False.
             if debug_out is not None:
                 debug_out["verdict_text"] = None
-                debug_out["result"] = True
-                debug_out["exception"] = str(e)
-            return True  # don't block the answer if the check itself fails
+                debug_out["status"] = "check_could_not_run"
+                debug_out["result"] = False
+                debug_out["exception"] = f"{type(e).__name__}: {e}"
+            return False
+        # Leading punctuation/markdown (e.g. "**YES**") is ignored; anything that
+        # isn't clearly YES or NO counts as not verified.
+        m = re.match(r"\W*(YES|NO)\b", raw.upper())
+        status = {"YES": "supported", "NO": "not_supported"}.get(m.group(1)) if m else "ambiguous"
+        result = status == "supported"
+        if debug_out is not None:
+            debug_out["verdict_text"] = raw
+            debug_out["status"] = status
+            debug_out["result"] = result
+            debug_out["exception"] = None
+        return result
 
     # ==================================================================
     # Intent router + meta path (summaries bypass retrieval, NOT owner filtering)
@@ -495,6 +520,11 @@ class LexAIEngine:
             dbg["stages_ms"]["verify"] = (time.perf_counter() - t0) * 1000
             dbg["verification"] = {
                 "verdict_text": verify_debug.get("verdict_text"),
+                "status": verify_debug.get("status"),
+                "check_ran": verify_debug.get("status") != "check_could_not_run",
+                "note": ("the verification check could not run (verify LLM call failed); "
+                         "verified is False because nothing was checked"
+                         if verify_debug.get("status") == "check_could_not_run" else None),
                 "verify_call_exception": verify_debug.get("exception"),
                 "result": verified,
                 "effect_on_answer": ("verified flag is returned alongside the answer; "
