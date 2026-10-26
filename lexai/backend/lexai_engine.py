@@ -51,6 +51,7 @@ EMBED_MODEL    = os.getenv("EMBED_MODEL", "BAAI/bge-small-en-v1.5")
 RERANK_MODEL   = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-base")
 CHROMA_DIR     = os.getenv("CHROMA_PERSIST_DIR", "./chroma_store")
 CONF_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.30"))  # Layer 6 gate
+REFUSAL_TEXT   = "Not found in the uploaded document(s)."  # Layer 6 gate refusal message
 
 # Chunking parameters (Layer 2)
 CHUNK_WORDS   = 400
@@ -91,9 +92,9 @@ class LexAIEngine:
 
         # In-memory state, rebuilt from Chroma so Chroma is the single source of truth.
         # self.chunks holds every owner's chunks; retrieval always filters by owner_id.
+        # The engine itself is stateless about chat history — see query()'s `history` arg.
         self.chunks = []      # list of {"id", "text", "file", "page", "owner_id"}
         self.bm25 = None      # BM25 index (Layer 3 keyword side), built over all chunks
-        self.history = {}     # owner_id -> list of {"q", "a"} turns, for follow-up condensing
         self._rebuild_from_store()
 
         total_papers = len({c["file"] for c in self.chunks})
@@ -381,11 +382,12 @@ class LexAIEngine:
     # ==================================================================
     # Follow-up condensing (runs BEFORE the gate — the ordering fix)
     # ==================================================================
-    def _condense(self, query, owner_id, calls_log=None):
-        history = self.history.get(owner_id, [])
+    def _condense(self, query, history, calls_log=None):
+        """history is caller-supplied (see query()'s `history` arg) — the engine
+        itself holds no chat history between calls. Only the last 4 turns are used."""
         if not history:
             return query
-        recent = "\n".join(f"Q: {h['q']}\nA: {h['a']}" for h in history[-2:])
+        recent = "\n".join(f"Q: {h['q']}\nA: {h['a']}" for h in history[-4:])
         system = "Rewrite the follow-up as a standalone question. Output only the question."
         user = f"Chat so far:\n{recent}\n\nFollow-up: {query}\n\nStandalone question:"
         try:
@@ -396,7 +398,10 @@ class LexAIEngine:
     # ==================================================================
     # The full query path
     # ==================================================================
-    def query(self, question, owner_id, allowed_files=None, debug=False):
+    def query(self, question, owner_id, allowed_files=None, debug=False, history=None):
+        """history (optional): list of {"q", "a"} turns supplied by the caller for
+        follow-up condensing (see _condense). The engine stores none of this itself —
+        default None means no history, so no condense LLM call is made."""
         dbg = {"stages_ms": {}, "llm_calls": [], "counts": {}} if debug else None
         t_total = time.perf_counter() if debug else None
 
@@ -420,20 +425,23 @@ class LexAIEngine:
                 refusal_note = "refused=True: meta path matched but owner has no chunks (allowed_files filter or no uploads)"
             else:
                 refusal_note = "refused=False: meta path (_is_meta matched) bypasses the confidence gate entirely"
-            self.history.setdefault(owner_id, []).append({"q": question, "a": result["answer"]})
             if debug:
                 dbg["stages_ms"]["meta_generate"] = (time.perf_counter() - t0) * 1000
                 dbg["refusal_path"] = refusal_note
+                dbg["counts"]["history_turns_used"] = 0  # meta path never condenses
                 dbg["stages_ms"]["total"] = (time.perf_counter() - t_total) * 1000
                 result["debug"] = dbg
             return result
 
-        # Resolve pronouns in follow-ups FIRST, then retrieve.
+        # Resolve pronouns in follow-ups FIRST, then retrieve. `history` is supplied
+        # by the caller for this call only — the engine holds none between calls.
+        history_used = (history or [])[-4:]
         t0 = time.perf_counter() if debug else None
-        resolved = self._condense(question, owner_id, calls_log=(dbg["llm_calls"] if debug else None))
+        resolved = self._condense(question, history_used, calls_log=(dbg["llm_calls"] if debug else None))
         if debug:
             dbg["stages_ms"]["condense"] = (time.perf_counter() - t0) * 1000
             dbg["condensed_question"] = resolved
+            dbg["counts"]["history_turns_used"] = len(history_used)
 
         t0 = time.perf_counter() if debug else None
         sem = self._semantic_search(resolved, owner_id, k=15, allowed_files=allowed_files)   # Layer 3a
@@ -487,9 +495,8 @@ class LexAIEngine:
             }
 
         if gate_refuses:
-            self.history.setdefault(owner_id, []).append({"q": question, "a": "(refused)"})
             result = {"refused": True,
-                    "answer": "I don't know — your documents don't contain this.",
+                    "answer": REFUSAL_TEXT,
                     "citation": None, "confidence": round(best * 100),
                     "label": "Low", "sources": []}
             if debug:
@@ -536,7 +543,6 @@ class LexAIEngine:
         confidence = round(best * 100)
         label = "High" if best >= 0.7 else "Medium" if best >= 0.5 else "Low"
 
-        self.history.setdefault(owner_id, []).append({"q": question, "a": answer})
         result = {
             "refused": False,
             "answer": answer,
@@ -565,7 +571,7 @@ class LexAIEngine:
 
     def delete_document(self, owner_id, filename):
         """Delete one owner's chunks for one filename; returns how many were deleted.
-        Other owners' files with the same name are untouched. Chat history is left alone."""
+        Other owners' files with the same name are untouched."""
         where = {"$and": [{"owner_id": owner_id}, {"file": filename}]}
         n = len(self.collection.get(where=where, include=["metadatas"])["ids"])
         if n:
@@ -574,16 +580,14 @@ class LexAIEngine:
         return n
 
     def reset(self, owner_id=None):
-        """Wipe everything (owner_id=None) or just one owner's documents + history."""
+        """Wipe everything (owner_id=None) or just one owner's documents."""
         if owner_id is None:
             self.chroma.delete_collection("lexai")
             self.collection = self.chroma.get_or_create_collection("lexai")
-            self.history = {}
         else:
             existing = self.collection.get(where={"owner_id": owner_id})
             if existing["ids"]:
                 self.collection.delete(ids=existing["ids"])
-            self.history.pop(owner_id, None)
         self._rebuild_from_store()
         return {"status": "reset"}
 

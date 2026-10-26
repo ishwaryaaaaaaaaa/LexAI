@@ -183,7 +183,7 @@ Measured on local test pairs (2026-10-14):
 ### Layer 6 — Confidence Gate
 **Problem it addresses:** With weak context, an LLM tends to fill gaps from its own training data.
 
-**Implementation:** If the best reranked chunk's sigmoid score is below `CONFIDENCE_THRESHOLD` (default **0.30**), the query is refused without calling the LLM. The response is *"I don't know — your documents don't contain this."* with `refused: true` and the best score as `confidence`.
+**Implementation:** If the best reranked chunk's sigmoid score is below `CONFIDENCE_THRESHOLD` (default **0.30**), the query is refused without calling the LLM. The response is *"Not found in the uploaded document(s)."* with `refused: true` and the best score as `confidence`.
 
 **Calibration:** the gate works mechanically — after the scoring fix it refuses off-topic questions (a live smoke test on 2026-10-24 refused the off-topic question). But reranker scores now tend to sit very close to 0 or very close to 1, and the 0.30 value was chosen before the fix and has never been tuned on labeled relevant/irrelevant questions. **Treat 0.30 as uncalibrated.** The `confidence` field shown to users is `round(score × 100)` of the same number.
 
@@ -225,7 +225,7 @@ flowchart TD
     style LOOKUP fill:#0f3460,color:#e0e0e0
 ```
 
-Follow-up questions on the lookup path are first rewritten into a standalone question by an LLM call ("condense") that sees the last two turns of that `owner_id`'s chat history. History is kept in server memory until restart or `/reset`.
+Follow-up questions on the lookup path are first rewritten into a standalone question by an LLM call ("condense") that sees up to the last 4 turns of chat history. The backend is stateless about this: it keeps no history itself — the caller passes the recent turns on each `/query` call via an optional `history` field (list of `{"q", "a"}`, at most 6 items; `q`/`a` are truncated to 1500 characters server-side rather than rejected). Omitting `history` (or sending none) skips the condense call entirely — the question is used as-is.
 
 ---
 
@@ -299,10 +299,10 @@ When the response has `duplicate: true`, the React frontend shows "This file is 
 |---|---|---|---|
 | `GET` | `/health` | none | Liveness check — returns total paper count and chunk count (all owners) |
 | `POST` | `/upload` | token | Upload a `.pdf` or `.txt` — multipart: `file`. See [Upload de-duplication](#upload-de-duplication) |
-| `POST` | `/query` | token | Ask a question — JSON: `question`, optional `files` (list of filenames), optional `debug`. 503 if no LLM provider is reachable |
+| `POST` | `/query` | token | Ask a question — JSON: `question`, optional `files` (list of filenames), optional `debug`, optional `history` (list of `{"q", "a"}`, at most 6 items; the backend keeps no history itself — see [Pipeline](#pipeline)). 503 if no LLM provider is reachable |
 | `GET` | `/papers` | token | List the caller's documents |
 | `DELETE` | `/papers/{filename}` | token | Delete the caller's chunks for that filename (URL-encoded). Returns `{"file": ..., "deleted_chunks": n}`; 404 if the caller has no such file. Other users' files with the same name are not touched |
-| `POST` | `/reset` | `X-Admin-Key` | Deletes **all documents of every owner** and all chat history. Requires header `X-Admin-Key` equal to env `ADMIN_KEY`; disabled (403) when `ADMIN_KEY` is empty; wrong key → 403 |
+| `POST` | `/reset` | `X-Admin-Key` | Deletes **all documents of every owner**. Requires header `X-Admin-Key` equal to env `ADMIN_KEY`; disabled (403) when `ADMIN_KEY` is empty; wrong key → 403 |
 
 ### Authentication
 
@@ -560,7 +560,6 @@ Restart Claude Desktop. The backend must be running at `LEXAI_BACKEND_URL`.
 | MCP server sends a fixed `owner_id` and no token | Works only with `AUTH_DISABLED=true` |
 | Confidence threshold 0.30 is uncalibrated against current reranker scores | Open |
 | RAGAS scores are from a retired judge and predate the scoring fix | To be re-run |
-| Per-owner chat history is kept in memory, never trimmed, lost on restart | Open |
 | NVIDIA free endpoint can stall for minutes | Contained by timeout / failover / breaker, not fixed |
 | First query after startup is slow (≈106s measured once on 2026-10-13, cold start) | Not re-measured since the LLM client changes |
 | Cannot read graphs, charts, or image-based figures | No vision model |

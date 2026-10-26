@@ -28,7 +28,7 @@ from typing import List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form, Header
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from dotenv import load_dotenv
 
 import auth
@@ -56,11 +56,26 @@ app.add_middleware(
 engine = LexAIEngine()
 
 
+class HistoryTurn(BaseModel):
+    q: str
+    a: str
+
+    # Truncated, not rejected — a too-long turn still condenses, just clipped.
+    @field_validator("q", "a")
+    @classmethod
+    def _truncate(cls, v):
+        return v[:1500]
+
+
 class QueryIn(BaseModel):
     question: str
     owner_id: Optional[str] = None  # used only when AUTH_DISABLED=true; ignored otherwise
     files: Optional[List[str]] = None  # scope to specific filenames (Library "ask this file/collection")
     debug: Optional[bool] = False  # opt-in diagnostic tracing; see lexai_engine.query()
+    # Recent turns for follow-up condensing. The engine itself keeps no chat
+    # history between requests (see lexai_engine.query()'s `history` arg); the
+    # client resends whatever turns it wants considered. More than 6 -> 422.
+    history: Optional[List[HistoryTurn]] = Field(default=None, max_length=6)
 
 
 def resolve_owner(user_id, client_owner_id):
@@ -99,8 +114,10 @@ async def upload(file: UploadFile = File(...), owner_id: Optional[str] = Form(No
 @app.post("/query")
 def query(body: QueryIn, user_id: Optional[str] = Depends(get_user_id)):
     owner = resolve_owner(user_id, body.owner_id)
+    history = [{"q": h.q, "a": h.a} for h in body.history] if body.history else None
     try:
-        return engine.query(body.question, owner, allowed_files=body.files, debug=body.debug)
+        return engine.query(body.question, owner, allowed_files=body.files, debug=body.debug,
+                            history=history)
     except LLMUnavailableError:
         raise HTTPException(
             status_code=503,
@@ -126,8 +143,8 @@ def delete_paper(filename: str, owner_id: Optional[str] = None,
 
 @app.post("/reset")
 def reset(x_admin_key: Optional[str] = Header(default=None)):
-    # Wipes every owner's documents and all chat history, so it is locked behind
-    # ADMIN_KEY (never behind a user token). Unset/empty ADMIN_KEY disables it.
+    # Wipes every owner's documents, so it is locked behind ADMIN_KEY (never
+    # behind a user token). Unset/empty ADMIN_KEY disables it.
     admin_key = os.getenv("ADMIN_KEY", "")
     if not admin_key:
         raise HTTPException(status_code=403, detail="/reset is disabled.")

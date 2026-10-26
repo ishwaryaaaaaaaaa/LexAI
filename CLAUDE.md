@@ -173,10 +173,14 @@ Two query paths exist, chosen by `_is_meta` (keyword sniffing for "summarise/ove
   overview-style answer, and makes one LLM call (no verify, no `verified` key in the response).
 - **Lookup path** runs the full retrieval → RRF → rerank → gate → generate → verify pipeline.
 
-Multi-turn follow-ups are condensed (`_condense`) into standalone questions using the last 2 turns of
-`self.history[owner_id]` *before* retrieval runs. `self.history` is an in-memory dict on the single engine
-instance: it persists across requests for the life of the server process (shared by everyone sending
-that `owner_id`), is lost on restart, is never trimmed, and is cleared by `/reset`.
+Multi-turn follow-ups are condensed (`_condense`) into standalone questions *before* retrieval runs, using
+up to the last 4 turns of an optional `history` argument the **caller** supplies to `LexAIEngine.query(...,
+history=...)` — a list of `{"q", "a"}` dicts. The engine itself holds no chat history between calls: there
+is no `self.history`, nothing is stored, trimmed, or cleared by `/reset`; `history=None` (the default)
+means no history and no condense LLM call. `api.py`'s `/query` accepts this as an optional `history` field
+(Pydantic-validated: at most 6 items, 422 otherwise; each item's `q`/`a` is truncated to 1500 characters
+server-side rather than rejected) and passes it straight through — the client is responsible for resending
+whatever turns it wants considered on each call.
 
 ### LLM client (`llm_client.py`)
 
@@ -217,18 +221,20 @@ response has no `debug` key.
 ### API routes (`api.py`)
 
 - `GET /health` — no auth.
-- `POST /upload` (multipart `file`), `POST /query` (`question`, optional `files`, optional `debug`; 503 on
-  `LLMUnavailableError`), `GET /papers`, and `DELETE /papers/{filename}` (path param, URL-encoded,
-  `{filename:path}` so slashes survive) all depend on `auth.get_user_id`. With auth enabled the owner is
-  **always** the verified token's `sub`; any client-supplied `owner_id` is ignored. With
-  `AUTH_DISABLED=true` they use the client's `owner_id` (form field / JSON body / query string; 400 if
-  missing) — `api.resolve_owner()`. Response shapes are unchanged.
+- `POST /upload` (multipart `file`), `POST /query` (`question`, optional `files`, optional `debug`,
+  optional `history` — list of `{"q", "a"}`, Pydantic-validated at most 6 items (422 if more), each
+  `q`/`a` truncated to 1500 characters server-side rather than rejected; 503 on `LLMUnavailableError`),
+  `GET /papers`, and `DELETE /papers/{filename}` (path param, URL-encoded, `{filename:path}` so slashes
+  survive) all depend on `auth.get_user_id`. With auth enabled the owner is **always** the verified
+  token's `sub`; any client-supplied `owner_id` is ignored. With `AUTH_DISABLED=true` they use the
+  client's `owner_id` (form field / JSON body / query string; 400 if missing) — `api.resolve_owner()`.
+  Response shapes are unchanged.
 - `DELETE /papers/{filename}` calls `engine.delete_document(owner, filename)` (Chroma delete with a
-  `where` on `owner_id` + `file`, then `_rebuild_from_store`; chat history untouched) and returns
-  `{"file", "deleted_chunks"}`, or 404 if the caller has no chunks for that name.
+  `where` on `owner_id` + `file`, then `_rebuild_from_store`) and returns `{"file", "deleted_chunks"}`,
+  or 404 if the caller has no chunks for that name.
 - `POST /reset` never uses `get_user_id`: it requires header `X-Admin-Key` equal to env `ADMIN_KEY`
   (`hmac.compare_digest`); empty/unset `ADMIN_KEY` → 403 (disabled), wrong/missing key → 403. When allowed
-  it still calls `engine.reset()` with no `owner_id`, wiping every owner's chunks and all chat history.
+  it still calls `engine.reset()` with no `owner_id`, wiping every owner's chunks.
 - CORS: origins from `FRONTEND_ORIGIN` (comma-separated, default `http://localhost:5173`), methods
   `GET, POST, DELETE, OPTIONS`, headers `Authorization, Content-Type, X-Admin-Key`.
 
@@ -301,7 +307,11 @@ in README.md, as of 2026-10-24:
   `AUTH_DISABLED=true` every upload/query/delete gets 400.
 - **Backend token verification and the frontend token flow are untested against a real Supabase project**
   (offline tests only; the frontend changes were not built or linted — no `node_modules`).
-- **Per-owner chat history is never trimmed** (in memory until restart, fed into the condense call).
+- **The backend is stateless about chat history** — `/query`'s optional `history` field (caller-supplied,
+  capped at 6 turns / 1500 chars each) is the only source of follow-up context now. The frontend does not
+  yet send this field (untouched by the 2026-10-26 change, per task scope), so follow-up condensing is
+  effectively inert from the UI until `App.jsx` is updated to pass recent turns. The MCP server also sends
+  no `history`, so it has no conversational memory either.
 - **`CONFIDENCE_THRESHOLD` = 0.30 is uncalibrated** against the current (single-sigmoid) reranker scores.
 - **Live NVIDIA stalls not fixed at the source** — the free endpoint's intermittent multi-minute stalls
   (PROJECT_LOG.md 2026-10-15) are contained by the timeout/failover/breaker, not resolved.
